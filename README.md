@@ -1,36 +1,58 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ChatSLM - Proyecto de Laboratorio LABSEMCO
 
-## Getting Started
+Este proyecto tiene como objetivo desarrollar un Sistema de Chat impulsado por un **Small Language Model (SLM)** propio para la universidad, aprovechando recursos de hardware avanzado (RTX 4090, clúster local y supercómputo "Yuka").
 
-First, run the development server:
+## 🚀 Objetivo del Proyecto
+Crear un asistente inteligente institucional mediante el fine-tuning o distillation de modelos de lenguaje existentes (e.g., Llama 3.2, Mistral). El sistema servirá como una herramienta de servicio social y orgullo universitario.
 
+## 🛠️ Stack Tecnológico
+- **Frontend**: [Next.js](https://nextjs.org/) (React) - Interfaz de chat moderna y responsiva.
+- **Backend (Próximamente)**: Python (FastAPI) - Para gestionar la lógica del modelo y la API.
+- **IA/Modelos**: PyTorch, Llama/Mistral (Fine-tuning/Distillation).
+- **Infraestructura**: Despliegue en servidores locales con GPUs RTX 4090.
+
+## 👤 Roles y Responsabilidades
+**Rol: Full Stack + Arquitecto**
+- Desarrollo del Frontend (Next.js) y Backend (API).
+- Definición de arquitectura del modelo (selección de modelo base, estrategia de fine-tuning).
+- Optimización para hardware disponible.
+
+## 📋 Comandos Importantes
+
+### Instalación y Desarrollo
 ```bash
+# Instalar dependencias
+npm install
+
+# Correr servidor de desarrollo
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+
+# Construir para producción
+npm run build
+
+# Iniciar servidor de producción
+npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Git y Control de Versiones
+```bash
+# Clonar el repositorio
+git clone https://github.com/luisjosuecortes/Interfaz-Chat.git
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+# Verificar estado
+git status
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# Agregar cambios
+git add .
 
-## Learn More
+# Guardar cambios (Commit)
+git commit -m "Descripción de los cambios"
 
-To learn more about Next.js, take a look at the following resources:
+# Subir cambios (Push)
+git push origin main
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 🤝 Colaboradores WEB
+- Luis Cortés

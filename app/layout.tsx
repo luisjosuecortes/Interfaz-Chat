@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ChatSLM",
-  description: "Proyecto de Chat con IA por el laboratorio de LABSENCO",
+  description: "Proyecto de Chat con IA por el laboratorio de LABSEMCO",
 };
 
 export default function RootLayout({
