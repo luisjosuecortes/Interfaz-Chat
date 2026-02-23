@@ -1,7 +1,8 @@
 "use client"
 
-import { useCallback, useSyncExternalStore } from "react"
+import { useSyncExternalStore } from "react"
 import type { EstadoChat, AccionesChat, Mensaje, Conversacion } from "./tipos"
+import { MODELO_POR_DEFECTO } from "./modelos"
 
 // Generador de IDs simple
 function generarId(): string {
@@ -14,6 +15,7 @@ const estadoInicial: EstadoChat = {
   conversacionActiva: null,
   estaBarraLateralAbierta: true,
   estaEscribiendo: false,
+  modeloSeleccionado: MODELO_POR_DEFECTO,
 }
 
 // Store global simple (sin dependencias externas)
@@ -141,6 +143,13 @@ const acciones: AccionesChat = {
       conversaciones: previo.conversaciones.map((c) =>
         c.id === id ? { ...c, titulo } : c
       ),
+    }))
+  },
+
+  seleccionarModelo: (idModelo: string) => {
+    establecerEstado((previo) => ({
+      ...previo,
+      modeloSeleccionado: idModelo,
     }))
   },
 }

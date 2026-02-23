@@ -1,45 +1,28 @@
 "use client"
 
-import { PanelLeftOpen, Sparkles, Code, BookOpen, Lightbulb } from "lucide-react"
+import { PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import type { Adjunto } from "@/lib/tipos"
+import { EntradaMensaje } from "@/components/chat/entrada-mensaje"
 
 interface PropiedadesPantallaInicio {
   estaBarraLateralAbierta: boolean
-  alNuevaConversacion: () => void
+  modeloSeleccionado: string
   alAlternarBarraLateral: () => void
+  alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void
+  alSeleccionarModelo: (idModelo: string) => void
 }
-
-const SUGERENCIAS = [
-  {
-    icono: Sparkles,
-    titulo: "Explícame un concepto",
-    descripcion: "¿Qué es la inteligencia artificial?",
-  },
-  {
-    icono: Code,
-    titulo: "Ayúdame con código",
-    descripcion: "Escribe una función en Python",
-  },
-  {
-    icono: BookOpen,
-    titulo: "Resumen de texto",
-    descripcion: "Resume este artículo para mí",
-  },
-  {
-    icono: Lightbulb,
-    titulo: "Ideas creativas",
-    descripcion: "Sugiere nombres para mi proyecto",
-  },
-]
 
 export function PantallaInicio({
   estaBarraLateralAbierta,
-  alNuevaConversacion,
+  modeloSeleccionado,
   alAlternarBarraLateral,
+  alEnviar,
+  alSeleccionarModelo,
 }: PropiedadesPantallaInicio) {
   return (
-    <div className="flex flex-1 flex-col h-screen">
+    <div className="flex flex-1 flex-col h-full overflow-hidden w-full">
       {/* Cabecera */}
       <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-claude-input-border)]">
         {!estaBarraLateralAbierta && (
@@ -62,57 +45,28 @@ export function PantallaInicio({
       {/* Contenido central */}
       <div className="flex flex-1 flex-col items-center justify-center px-4">
         <div className="max-w-2xl w-full text-center">
-          {/* Logo y título estilo Claude */}
+          {/* Logo y título */}
           <div className="mb-8">
             <div className="mx-auto mb-5 h-16 w-16 rounded-full bg-gradient-to-br from-[var(--color-claude-acento)] to-[#e8956d] flex items-center justify-center shadow-md">
               <svg width="28" height="28" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M8 1L6.5 6.5L1 8L6.5 9.5L8 15L9.5 9.5L15 8L9.5 6.5L8 1Z" fill="white"/>
+                <path d="M8 1L6.5 6.5L1 8L6.5 9.5L8 15L9.5 9.5L15 8L9.5 6.5L8 1Z" fill="white" />
               </svg>
             </div>
             <h1 className="text-3xl font-semibold text-[var(--color-claude-texto)] mb-2">
               ¿En qué puedo ayudarte hoy?
             </h1>
-            <p className="text-[var(--color-claude-texto-secundario)]">
-              ChatSLM — Tu asistente de inteligencia artificial
-            </p>
           </div>
 
-          {/* Tarjetas de sugerencias */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
-            {SUGERENCIAS.map((sugerencia) => (
-              <button
-                key={sugerencia.titulo}
-                className="flex items-start gap-3 rounded-xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] p-4 text-left transition-colors hover:bg-[var(--color-claude-sidebar-hover)] hover:border-[var(--color-claude-acento)]/30"
-                onClick={alNuevaConversacion}
-              >
-                <sugerencia.icono className="h-5 w-5 mt-0.5 text-[var(--color-claude-acento)] shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-[var(--color-claude-texto)]">
-                    {sugerencia.titulo}
-                  </p>
-                  <p className="text-xs text-[var(--color-claude-texto-secundario)] mt-0.5">
-                    {sugerencia.descripcion}
-                  </p>
-                </div>
-              </button>
-            ))}
+          <div className="w-full">
+            {/* Entrada de mensaje con selector de modelo */}
+            <EntradaMensaje
+              alEnviar={alEnviar}
+              estaDeshabilitado={false}
+              modeloSeleccionado={modeloSeleccionado}
+              alSeleccionarModelo={alSeleccionarModelo}
+            />
           </div>
-
-          {/* Botón nueva conversación */}
-          <Button
-            className="bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white px-6 py-2 rounded-full"
-            onClick={alNuevaConversacion}
-          >
-            Iniciar nueva conversación
-          </Button>
         </div>
-      </div>
-
-      {/* Pie de página */}
-      <div className="py-4 text-center">
-        <p className="text-xs text-[var(--color-claude-texto-secundario)]">
-          ChatSLM — Laboratorio LABSEMCO
-        </p>
       </div>
     </div>
   )

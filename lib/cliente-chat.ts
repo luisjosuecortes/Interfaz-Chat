@@ -1,21 +1,33 @@
 // Cliente para la API de chat con streaming
+import type { Adjunto } from "./tipos"
 
 interface MensajeApi {
   rol: "usuario" | "asistente"
   contenido: string
 }
 
-export async function enviarMensajeConStreaming(
-  mensajes: MensajeApi[],
-  alActualizar: (textoActual: string) => void,
-  alFinalizar: () => void,
-  alError: (error: string) => void,
-): Promise<void> {
+interface OpcionesEnvio {
+  mensajes: MensajeApi[]
+  modelo: string
+  adjuntos?: Adjunto[]
+  alActualizar: (textoActual: string) => void
+  alFinalizar: () => void
+  alError: (error: string) => void
+}
+
+export async function enviarMensajeConStreaming({
+  mensajes,
+  modelo,
+  adjuntos,
+  alActualizar,
+  alFinalizar,
+  alError,
+}: OpcionesEnvio): Promise<void> {
   try {
     const respuesta = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mensajes }),
+      body: JSON.stringify({ mensajes, modelo, adjuntos }),
     })
 
     if (!respuesta.ok) {
@@ -65,7 +77,7 @@ export async function enviarMensajeConStreaming(
     }
 
     alFinalizar()
-  } catch (error) {
+  } catch {
     alError("Error de conexión. Verifica tu conexión a internet.")
     alFinalizar()
   }
