@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "katex/dist/katex.min.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -97,6 +98,7 @@
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground;
   }
@@ -122,8 +124,16 @@
 
 /* Animación de escritura */
 @keyframes parpadeo-cursor {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
+
+  0%,
+  50% {
+    opacity: 1;
+  }
+
+  51%,
+  100% {
+    opacity: 0;
+  }
 }
 
 .cursor-parpadeo::after {
@@ -138,4 +148,174 @@
   field-sizing: content;
   min-height: 24px;
   max-height: 200px;
+}
+
+/* ===== Estilos para contenido Markdown ===== */
+
+.prosa-markdown {
+  line-height: 1.7;
+}
+
+.prosa-markdown>*:first-child {
+  margin-top: 0;
+}
+
+.prosa-markdown>*:last-child {
+  margin-bottom: 0;
+}
+
+/* Parrafos */
+.prosa-markdown p {
+  margin: 0.5em 0;
+}
+
+/* Encabezados */
+.prosa-markdown h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin: 1em 0 0.5em;
+}
+
+.prosa-markdown h2 {
+  font-size: 1.3em;
+  font-weight: 650;
+  margin: 0.9em 0 0.4em;
+}
+
+.prosa-markdown h3 {
+  font-size: 1.15em;
+  font-weight: 600;
+  margin: 0.8em 0 0.3em;
+}
+
+.prosa-markdown h4 {
+  font-size: 1.05em;
+  font-weight: 600;
+  margin: 0.7em 0 0.3em;
+}
+
+.prosa-markdown h5,
+.prosa-markdown h6 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.6em 0 0.2em;
+}
+
+/* Citas (blockquote) */
+.prosa-markdown blockquote {
+  border-left: 3px solid var(--color-claude-acento);
+  padding: 0.5em 1em;
+  margin: 0.75em 0;
+  background: rgba(217, 119, 87, 0.06);
+  border-radius: 0 0.375rem 0.375rem 0;
+  color: var(--color-claude-texto-secundario);
+}
+
+.prosa-markdown blockquote p {
+  margin: 0.25em 0;
+}
+
+/* Tablas */
+.prosa-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.9em;
+  overflow: hidden;
+  border: 1px solid var(--color-claude-input-border);
+  border-radius: 0.5rem;
+}
+
+.prosa-markdown thead {
+  background: var(--color-claude-sidebar);
+}
+
+.prosa-markdown th {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.5em 0.75em;
+  border-bottom: 2px solid var(--color-claude-input-border);
+}
+
+.prosa-markdown td {
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid var(--color-claude-input-border);
+}
+
+.prosa-markdown tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Linea horizontal */
+.prosa-markdown hr {
+  border: none;
+  border-top: 1px solid var(--color-claude-input-border);
+  margin: 1em 0;
+}
+
+/* Listas */
+.prosa-markdown ul {
+  list-style: disc;
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.prosa-markdown ol {
+  list-style: decimal;
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.prosa-markdown li {
+  margin: 0.25em 0;
+}
+
+.prosa-markdown li>ul,
+.prosa-markdown li>ol {
+  margin: 0.15em 0;
+}
+
+/* Color de marcador (acento) */
+.prosa-markdown ul li::marker,
+.prosa-markdown ol li::marker {
+  color: var(--color-claude-acento);
+}
+
+/* Enlaces */
+.prosa-markdown a {
+  color: var(--color-claude-acento);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prosa-markdown a:hover {
+  color: var(--color-claude-acento-hover);
+}
+
+/* Tachado */
+.prosa-markdown del {
+  color: var(--color-claude-texto-secundario);
+}
+
+/* Checkboxes de task list (GFM) */
+.prosa-markdown input[type="checkbox"] {
+  accent-color: var(--color-claude-acento);
+  margin-right: 0.4em;
+}
+
+/* KaTeX ajustes */
+.prosa-markdown .katex {
+  font-size: 1.05em;
+}
+
+/* ===== Fade de titulo en barra lateral ===== */
+
+/* Fade cuando el item esta activo o en hover (fondo sidebar-hover) */
+.titulo-fade-activo {
+  background: linear-gradient(to left, var(--color-claude-sidebar-hover), transparent);
+}
+
+/* Fade cuando el item esta inactivo (fondo sidebar normal) */
+.titulo-fade-inactivo {
+  background: linear-gradient(to left, var(--color-claude-sidebar), transparent);
 }

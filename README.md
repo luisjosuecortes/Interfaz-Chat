@@ -1,37 +1,43 @@
-# ChatSLM - Proyecto de Laboratorio LABSEMCO
+# PenguinChat - Asistente de IA 🐧
 
-Este proyecto tiene como objetivo desarrollar un Sistema de Chat impulsado por un **Small Language Model (SLM)** propio para la universidad, aprovechando recursos de hardware avanzado (RTX 4090, clúster local y supercómputo "Yuka").
 
-## 🚀 Objetivo del Proyecto
-Crear un asistente inteligente institucional mediante el fine-tuning o distillation de modelos de lenguaje existentes (e.g., Llama 3.2, Mistral). El sistema servirá como una herramienta de servicio social y orgullo universitario.
+PenguinChat es una interfaz de chat avanzada y completa, diseñada para ofrecer una experiencia de usuario premium con capacidades modernas de inteligencia artificial.
 
-## 🛠️ Stack Tecnológico
-- **Frontend**: [Next.js](https://nextjs.org/) (React) - Interfaz de chat moderna y responsiva.
-- **Backend (Próximamente)**: Python (FastAPI) - Para gestionar la lógica del modelo y la API.
-- **IA/Modelos**: PyTorch, Llama/Mistral (Fine-tuning/Distillation).
-- **Infraestructura**: Despliegue en servidores locales con GPUs RTX 4090.
+## Características Principales 🚀
 
-## 👤 Roles y Responsabilidades
-**Rol: Full Stack + Arquitecto**
-- Desarrollo del Frontend (Next.js) y Backend (API).
-- Definición de arquitectura del modelo (selección de modelo base, estrategia de fine-tuning).
-- Optimización para hardware disponible.
+- **Interfaz de Chat Completa**: Diseño moderno, responsivo y elegante.
+- **Historial de Chats**: Gestión eficiente de conversaciones anteriores.
+- **Herramientas Integradas (Tools)**: Capacidad para ejecutar funciones y procesos complejos.
+- **Navegación Web**: Búsqueda e interacción con información en tiempo real de internet.
+- **Estética Premium**: Micro-animaciones, modos claro/oscuro y diseño cuidado hasta el último detalle.
 
-## 📋 Comandos Importantes
+## Instalación y Configuración 🛠️
 
-### Instalación y Desarrollo
+Sigue estos pasos para configurar el proyecto localmente:
+
+### Requisitos Previos
+
+- [Node.js](https://nodejs.org/) (versión 18 o superior recomendada)
+- npm, yarn, pnpm o bun
+
+### Pasos de Instalación
+
+1.  **Clonar el repositorio** (si aplica)
+2.  **Instalar dependencias**:
+    ```bash
+    npm install
+    # o
+    yarn install
+    ```
+3.  **Configurar variables de entorno**:
+    Crea un archivo `.env.local` en la raíz del proyecto y añade las claves necesarias (API keys, etc.).
+
+## Desarrollo 💻
+
+Para iniciar el servidor de desarrollo:
+
 ```bash
-# Instalar dependencias
-npm install
-
-# Correr servidor de desarrollo
 npm run dev
-
-# Construir para producción
-npm run build
-
-# Iniciar servidor de producción
-npm start
 ```
 
 ### Git y Control de Versiones
@@ -52,5 +58,5 @@ git commit -m "Descripción de los cambios"
 git push origin main
 ```
 
-## 🤝 Colaboradores WEB
+## 🤝 Desarrollador
 - Luis Cortés

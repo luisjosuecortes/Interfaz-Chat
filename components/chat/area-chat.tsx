@@ -19,6 +19,7 @@ interface PropiedadesAreaChat {
   alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void
   alAlternarBarraLateral: () => void
   alSeleccionarModelo: (idModelo: string) => void
+  alDetener: () => void
 }
 
 export function AreaChat({
@@ -30,6 +31,7 @@ export function AreaChat({
   alEnviar,
   alAlternarBarraLateral,
   alSeleccionarModelo,
+  alDetener,
 }: PropiedadesAreaChat) {
   const referenciaFinal = useRef<HTMLDivElement>(null)
 
@@ -41,14 +43,14 @@ export function AreaChat({
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden">
       {/* Cabecera minimalista */}
-      <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-claude-input-border)] bg-[var(--color-claude-bg)]">
+      <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-claude-input-border)] bg-[var(--color-claude-bg)] shrink-0">
         {!estaBarraLateralAbierta && (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+                className="h-8 w-8 shrink-0 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
                 onClick={alAlternarBarraLateral}
               >
                 <PanelLeftOpen className="h-4 w-4" />
@@ -57,9 +59,9 @@ export function AreaChat({
             <TooltipContent side="right">Abrir barra lateral</TooltipContent>
           </Tooltip>
         )}
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-[var(--color-claude-texto)]">
-            {conversacion.titulo || "Nueva conversación"}
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-[var(--color-claude-texto)]">
+            {conversacion.titulo || "Sin titulo"}
           </span>
         </div>
       </header>
@@ -111,6 +113,8 @@ export function AreaChat({
         <EntradaMensaje
           alEnviar={alEnviar}
           estaDeshabilitado={estaEscribiendo}
+          estaEscribiendo={estaEscribiendo}
+          alDetener={alDetener}
           modeloSeleccionado={modeloSeleccionado}
           alSeleccionarModelo={alSeleccionarModelo}
         />

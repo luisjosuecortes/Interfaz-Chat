@@ -10,6 +10,7 @@ interface OpcionesEnvio {
   mensajes: MensajeApi[]
   modelo: string
   adjuntos?: Adjunto[]
+  senalAborto?: AbortSignal
   alActualizar: (textoActual: string) => void
   alFinalizar: () => void
   alError: (error: string) => void
@@ -19,6 +20,7 @@ export async function enviarMensajeConStreaming({
   mensajes,
   modelo,
   adjuntos,
+  senalAborto,
   alActualizar,
   alFinalizar,
   alError,
@@ -28,6 +30,7 @@ export async function enviarMensajeConStreaming({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mensajes, modelo, adjuntos }),
+      signal: senalAborto,
     })
 
     if (!respuesta.ok) {
@@ -70,15 +73,20 @@ export async function enviarMensajeConStreaming({
               alActualizar(textoAcumulado)
             }
           } catch {
-            // Ignorar líneas que no son JSON válido
+            // Ignorar lineas que no son JSON valido
           }
         }
       }
     }
 
     alFinalizar()
-  } catch {
-    alError("Error de conexión. Verifica tu conexión a internet.")
+  } catch (error) {
+    // Si fue cancelacion intencional, no mostrar error
+    if (error instanceof DOMException && error.name === "AbortError") {
+      alFinalizar()
+      return
+    }
+    alError("Error de conexion. Verifica tu conexion a internet.")
     alFinalizar()
   }
 }

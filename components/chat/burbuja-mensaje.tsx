@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { Copy, Check, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useState } from "react"
+import { RenderizadorMarkdown } from "@/components/chat/renderizador-markdown"
 
 interface PropiedadesBurbuja {
   mensaje: Mensaje
@@ -71,13 +72,19 @@ export function BurbujaMensaje({ mensaje, estaEscribiendo = false }: Propiedades
           </div>
         )}
 
-        {/* Renderizar contenido con formato básico */}
-        <div className="whitespace-pre-wrap break-words">
-          <ContenidoFormateado texto={mensaje.contenido} />
-          {estaEscribiendo && <span className="cursor-parpadeo" />}
-        </div>
+        {/* Renderizar contenido con markdown */}
+        {esUsuario ? (
+          <div className="whitespace-pre-wrap break-words">
+            {mensaje.contenido}
+          </div>
+        ) : (
+          <div className="prosa-markdown break-words">
+            <RenderizadorMarkdown contenido={mensaje.contenido} />
+            {estaEscribiendo && <span className="cursor-parpadeo" />}
+          </div>
+        )}
 
-        {/* Botón de copiar */}
+        {/* Boton de copiar */}
         {!esUsuario && mensaje.contenido && !estaEscribiendo && (
           <div className="mt-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <Button
@@ -95,92 +102,6 @@ export function BurbujaMensaje({ mensaje, estaEscribiendo = false }: Propiedades
           </div>
         )}
       </div>
-
-
     </div>
-  )
-}
-
-// Componente para formatear texto con markdown básico
-function ContenidoFormateado({ texto }: { texto: string }) {
-  if (!texto) return null
-
-  const lineas = texto.split("\n")
-
-  return (
-    <>
-      {lineas.map((linea, indice) => {
-        // Encabezados
-        if (linea.startsWith("### "))
-          return (
-            <h3 key={indice} className="text-base font-semibold mt-3 mb-1 text-[var(--color-claude-texto)]">
-              {linea.substring(4)}
-            </h3>
-          )
-        if (linea.startsWith("## "))
-          return (
-            <h2 key={indice} className="text-lg font-semibold mt-4 mb-1 text-[var(--color-claude-texto)]">
-              {linea.substring(3)}
-            </h2>
-          )
-
-        // Bloque de código
-        if (linea.startsWith("```"))
-          return (
-            <div key={indice} className="my-1 text-xs text-[var(--color-claude-texto-secundario)]">
-              {linea}
-            </div>
-          )
-
-        // Listas con viñetas
-        if (linea.startsWith("- "))
-          return (
-            <div key={indice} className="flex gap-2 ml-2">
-              <span className="text-[var(--color-claude-acento)]">•</span>
-              <span><TextoConNegritas texto={linea.substring(2)} /></span>
-            </div>
-          )
-
-        // Listas numeradas
-        const coincidenciaNumero = linea.match(/^(\d+)\.\s(.+)/)
-        if (coincidenciaNumero)
-          return (
-            <div key={indice} className="flex gap-2 ml-2">
-              <span className="text-[var(--color-claude-acento)] font-medium">{coincidenciaNumero[1]}.</span>
-              <span><TextoConNegritas texto={coincidenciaNumero[2]} /></span>
-            </div>
-          )
-
-        // Línea vacía
-        if (linea.trim() === "")
-          return <div key={indice} className="h-2" />
-
-        // Texto normal
-        return (
-          <span key={indice}>
-            <TextoConNegritas texto={linea} />
-            {indice < lineas.length - 1 && "\n"}
-          </span>
-        )
-      })}
-    </>
-  )
-}
-
-// Formatear negritas **texto**
-function TextoConNegritas({ texto }: { texto: string }) {
-  const partes = texto.split(/(\*\*[^*]+\*\*)/)
-  return (
-    <>
-      {partes.map((parte, indice) => {
-        if (parte.startsWith("**") && parte.endsWith("**"))
-          return (
-            <strong key={indice} className="font-semibold text-[var(--color-claude-texto)]">
-              {parte.slice(2, -2)}
-            </strong>
-          )
-        return <span key={indice}>{parte}</span>
-      })}
-    </>
   )
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { useAlmacenChat } from "@/lib/almacen-chat"
 import { BarraLateral } from "@/components/chat/barra-lateral"
 import { AreaChat } from "@/components/chat/area-chat"
@@ -28,14 +28,46 @@ export function ContenedorChat() {
   } = useAlmacenChat()
 
   const [mensajeError, establecerMensajeError] = useState<string | null>(null)
+  const referenciaControlador = useRef<AbortController | null>(null)
 
-  // Lógica centralizada de envío de mensajes
+  // Generar titulo con IA despues del primer intercambio
+  async function generarTituloConversacion(idConversacion: string, mensajeUsuario: string) {
+    try {
+      const conversacion = conversaciones.find((c) => c.id === idConversacion)
+      const respuestaAsistente =
+        conversacion?.mensajes[conversacion.mensajes.length - 1]?.contenido || ""
+
+      const respuesta = await fetch("/api/titulo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mensajeUsuario, respuestaAsistente }),
+      })
+
+      if (respuesta.ok) {
+        const { titulo } = await respuesta.json()
+        if (titulo) {
+          renombrarConversacion(idConversacion, titulo)
+        }
+      }
+    } catch {
+      // Fallo silencioso: conservar titulo por substring
+    }
+  }
+
+  // Detener generacion en curso
+  function detenerGeneracion() {
+    referenciaControlador.current?.abort()
+    referenciaControlador.current = null
+  }
+
+  // Logica centralizada de envio de mensajes
   async function manejarEnvio(contenido: string, adjuntos?: Adjunto[]) {
     establecerMensajeError(null)
 
-    // Si no hay conversación activa, crear una nueva
+    // Si no hay conversacion activa, crear una nueva
     let idConversacion = conversacionActiva
     const mensajesPrevios = conversacionActual?.mensajes ?? []
+    const esPrimerMensaje = mensajesPrevios.length === 0
 
     if (!idConversacion) {
       idConversacion = crearConversacion()
@@ -53,6 +85,10 @@ export function ContenedorChat() {
       { rol: "usuario" as const, contenido },
     ]
 
+    // Crear controlador de cancelacion para esta solicitud
+    const controlador = new AbortController()
+    referenciaControlador.current = controlador
+
     // Iniciar respuesta del asistente
     establecerEscribiendo(true)
     agregarMensaje(idConversacion, { rol: "asistente", contenido: "" })
@@ -61,15 +97,23 @@ export function ContenedorChat() {
       mensajes: historialMensajes,
       modelo: modeloSeleccionado,
       adjuntos,
+      senalAborto: controlador.signal,
       alActualizar: (textoActual) => {
         actualizarUltimoMensaje(idConversacion!, textoActual)
       },
       alFinalizar: () => {
         establecerEscribiendo(false)
+        referenciaControlador.current = null
+
+        // Generar titulo con IA despues del primer intercambio
+        if (esPrimerMensaje && idConversacion) {
+          generarTituloConversacion(idConversacion, contenido)
+        }
       },
       alError: (error) => {
         establecerMensajeError(error)
         establecerEscribiendo(false)
+        referenciaControlador.current = null
       },
     })
   }
@@ -88,9 +132,9 @@ export function ContenedorChat() {
         alRenombrarConversacion={renombrarConversacion}
       />
 
-      {/* Área principal */}
+      {/* Area principal */}
       <main className="flex flex-1 flex-col min-w-0">
-        {conversacionActual ? (
+        {conversacionActual && conversacionActual.mensajes.length > 0 ? (
           <AreaChat
             conversacion={conversacionActual}
             estaEscribiendo={estaEscribiendo}
@@ -100,6 +144,7 @@ export function ContenedorChat() {
             alEnviar={manejarEnvio}
             alAlternarBarraLateral={alternarBarraLateral}
             alSeleccionarModelo={seleccionarModelo}
+            alDetener={detenerGeneracion}
           />
         ) : (
           <PantallaInicio

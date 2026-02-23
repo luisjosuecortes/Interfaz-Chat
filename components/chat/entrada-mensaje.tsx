@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef, useCallback } from "react"
-import { ArrowUp, Paperclip, X, ChevronDown, Check, Image as ImageIcon, FileText } from "lucide-react"
+import { ArrowUp, Paperclip, X, ChevronDown, Check, Square, Image as ImageIcon, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -32,6 +32,8 @@ const CATEGORIAS_MODELOS = [
 interface PropiedadesEntrada {
   alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void
   estaDeshabilitado: boolean
+  estaEscribiendo?: boolean
+  alDetener?: () => void
   modeloSeleccionado: string
   alSeleccionarModelo: (idModelo: string) => void
 }
@@ -44,6 +46,8 @@ function generarId(): string {
 export function EntradaMensaje({
   alEnviar,
   estaDeshabilitado,
+  estaEscribiendo,
+  alDetener,
   modeloSeleccionado,
   alSeleccionarModelo,
 }: PropiedadesEntrada) {
@@ -247,25 +251,40 @@ export function EntradaMensaje({
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Botón enviar */}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="icon"
-                    className={cn(
-                      "h-8 w-8 shrink-0 rounded-full transition-colors",
-                      tieneContenido && !estaDeshabilitado
-                        ? "bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white"
-                        : "bg-[var(--color-claude-input-border)] text-[var(--color-claude-texto-secundario)] cursor-not-allowed"
-                    )}
-                    disabled={!tieneContenido || estaDeshabilitado}
-                    onClick={manejarEnvio}
-                  >
-                    <ArrowUp className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Enviar mensaje</TooltipContent>
-              </Tooltip>
+              {/* Boton enviar / detener */}
+              {estaEscribiendo && alDetener ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      className="h-8 w-8 shrink-0 rounded-full bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white transition-colors"
+                      onClick={alDetener}
+                    >
+                      <Square className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Detener generacion</TooltipContent>
+                </Tooltip>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="icon"
+                      className={cn(
+                        "h-8 w-8 shrink-0 rounded-full transition-colors",
+                        tieneContenido && !estaDeshabilitado
+                          ? "bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white"
+                          : "bg-[var(--color-claude-input-border)] text-[var(--color-claude-texto-secundario)] cursor-not-allowed"
+                      )}
+                      disabled={!tieneContenido || estaDeshabilitado}
+                      onClick={manejarEnvio}
+                    >
+                      <ArrowUp className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Enviar mensaje</TooltipContent>
+                </Tooltip>
+              )}
             </div>
           </div>
         </div>

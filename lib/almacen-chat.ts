@@ -42,7 +42,7 @@ const acciones: AccionesChat = {
     const id = generarId()
     const nuevaConversacion: Conversacion = {
       id,
-      titulo: "Nueva conversación",
+      titulo: "Sin titulo",
       mensajes: [],
       fechaCreacion: new Date(),
       fechaActualizacion: new Date(),
@@ -87,13 +87,8 @@ const acciones: AccionesChat = {
       ...previo,
       conversaciones: previo.conversaciones.map((c) => {
         if (c.id !== conversacionId) return c
-        const tituloActualizado =
-          c.mensajes.length === 0 && mensaje.rol === "usuario"
-            ? mensaje.contenido.substring(0, 40) + (mensaje.contenido.length > 40 ? "..." : "")
-            : c.titulo
         return {
           ...c,
-          titulo: tituloActualizado,
           mensajes: [...c.mensajes, nuevoMensaje],
           fechaActualizacion: new Date(),
         }
