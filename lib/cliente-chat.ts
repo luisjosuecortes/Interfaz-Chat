@@ -1,5 +1,5 @@
 // Cliente para la API de chat con streaming
-import type { Adjunto } from "./tipos"
+import type { Adjunto, CitacionWeb, FuenteWeb } from "./tipos"
 
 interface MensajeApi {
   rol: "usuario" | "asistente"
@@ -14,6 +14,13 @@ interface OpcionesEnvio {
   alActualizar: (textoActual: string) => void
   alFinalizar: () => void
   alError: (error: string) => void
+  alBusquedaIniciada?: () => void
+  alBusquedaBuscando?: () => void
+  alBusquedaResultado?: (consultas: string[], fuentes: FuenteWeb[]) => void
+  alCitacion?: (citacion: CitacionWeb) => void
+  alPensamientoIniciado?: () => void
+  alPensamientoDelta?: (delta: string) => void
+  alPensamientoCompletado?: () => void
 }
 
 export async function enviarMensajeConStreaming({
@@ -24,6 +31,13 @@ export async function enviarMensajeConStreaming({
   alActualizar,
   alFinalizar,
   alError,
+  alBusquedaIniciada,
+  alBusquedaBuscando,
+  alBusquedaResultado,
+  alCitacion,
+  alPensamientoIniciado,
+  alPensamientoDelta,
+  alPensamientoCompletado,
 }: OpcionesEnvio): Promise<void> {
   try {
     const respuesta = await fetch("/api/chat", {
@@ -72,9 +86,49 @@ export async function enviarMensajeConStreaming({
 
           try {
             const parseado = JSON.parse(datos)
+
+            // Evento de contenido de texto (flujo principal)
             if (parseado.contenido) {
               textoAcumulado += parseado.contenido
               alActualizar(textoAcumulado)
+              continue
+            }
+
+            // Eventos tipados
+            switch (parseado.tipo) {
+              // Búsqueda web
+              case "busqueda_iniciada":
+                alBusquedaIniciada?.()
+                break
+              case "busqueda_buscando":
+                alBusquedaBuscando?.()
+                break
+              case "busqueda_resultado":
+                alBusquedaResultado?.(
+                  parseado.consultas ?? [],
+                  parseado.fuentes ?? []
+                )
+                break
+              case "busqueda_completada":
+                break
+              case "citacion":
+                if (parseado.citacion) {
+                  alCitacion?.(parseado.citacion as CitacionWeb)
+                }
+                break
+
+              // Pensamiento/Reasoning
+              case "pensamiento_iniciado":
+                alPensamientoIniciado?.()
+                break
+              case "pensamiento_delta":
+                if (parseado.delta) {
+                  alPensamientoDelta?.(parseado.delta as string)
+                }
+                break
+              case "pensamiento_completado":
+                alPensamientoCompletado?.()
+                break
             }
           } catch {
             // Ignorar lineas que no son JSON valido

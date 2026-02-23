@@ -48,8 +48,8 @@ export function AreaChat({
 
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden">
-      {/* Cabecera minimalista */}
-      <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-claude-input-border)] bg-[var(--color-claude-bg)] shrink-0">
+      {/* Cabecera con título de conversación */}
+      <header className="flex items-center gap-2 px-4 py-3 bg-[var(--color-claude-bg)] shrink-0">
         {!estaBarraLateralAbierta && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -67,7 +67,7 @@ export function AreaChat({
         )}
         <div className="min-w-0 flex-1">
           <span className="block truncate text-sm font-semibold text-[var(--color-claude-texto)]">
-            {conversacion.titulo || "Sin titulo"}
+            {conversacion.titulo || "Nueva conversación"}
           </span>
         </div>
       </header>

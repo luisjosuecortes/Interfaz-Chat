@@ -1,7 +1,7 @@
 "use client"
 
 import { useSyncExternalStore } from "react"
-import type { EstadoChat, AccionesChat, Mensaje, Conversacion } from "./tipos"
+import type { EstadoChat, AccionesChat, Mensaje, Conversacion, InfoBusquedaWeb, CitacionWeb, InfoPensamiento } from "./tipos"
 import { MODELO_POR_DEFECTO } from "./modelos"
 
 // Generador de IDs simple
@@ -180,6 +180,55 @@ const acciones: AccionesChat = {
           mensajes: c.mensajes.slice(0, indiceDesde),
           fechaActualizacion: new Date(),
         }
+      }),
+    }))
+  },
+
+  actualizarBusquedaUltimoMensaje: (conversacionId: string, busquedaWeb: InfoBusquedaWeb) => {
+    establecerEstado((previo) => ({
+      ...previo,
+      conversaciones: previo.conversaciones.map((c) => {
+        if (c.id !== conversacionId) return c
+        const mensajes = [...c.mensajes]
+        const ultimo = mensajes[mensajes.length - 1]
+        if (ultimo) {
+          mensajes[mensajes.length - 1] = { ...ultimo, busquedaWeb }
+        }
+        return { ...c, mensajes, fechaActualizacion: new Date() }
+      }),
+    }))
+  },
+
+  agregarCitacionUltimoMensaje: (conversacionId: string, citacion: CitacionWeb) => {
+    establecerEstado((previo) => ({
+      ...previo,
+      conversaciones: previo.conversaciones.map((c) => {
+        if (c.id !== conversacionId) return c
+        const mensajes = [...c.mensajes]
+        const ultimo = mensajes[mensajes.length - 1]
+        if (ultimo) {
+          const citacionesExistentes = ultimo.citaciones ?? []
+          const yaExiste = citacionesExistentes.some((ci) => ci.url === citacion.url)
+          if (!yaExiste) {
+            mensajes[mensajes.length - 1] = { ...ultimo, citaciones: [...citacionesExistentes, citacion] }
+          }
+        }
+        return { ...c, mensajes, fechaActualizacion: new Date() }
+      }),
+    }))
+  },
+
+  actualizarPensamientoUltimoMensaje: (conversacionId: string, pensamiento: InfoPensamiento) => {
+    establecerEstado((previo) => ({
+      ...previo,
+      conversaciones: previo.conversaciones.map((c) => {
+        if (c.id !== conversacionId) return c
+        const mensajes = [...c.mensajes]
+        const ultimo = mensajes[mensajes.length - 1]
+        if (ultimo) {
+          mensajes[mensajes.length - 1] = { ...ultimo, pensamiento }
+        }
+        return { ...c, mensajes, fechaActualizacion: new Date() }
       }),
     }))
   },

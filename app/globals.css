@@ -319,3 +319,68 @@
 .titulo-fade-inactivo {
   background: linear-gradient(to left, var(--color-claude-sidebar), transparent);
 }
+
+/* ===== Animación de búsqueda web ===== */
+
+/* Icono pulsante durante búsqueda */
+@keyframes pulsar-busqueda {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+}
+
+.icono-busqueda-pulsando {
+  animation: pulsar-busqueda 1.5s ease-in-out infinite;
+}
+
+/* Puntos animados "..." */
+.puntos-animados::after {
+  content: "";
+  animation: puntos-secuencia 1.5s steps(4, end) infinite;
+}
+
+@keyframes puntos-secuencia {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
+/* Scrollbar horizontal sutil para citaciones */
+.scrollbar-citaciones::-webkit-scrollbar {
+  height: 4px;
+}
+
+.scrollbar-citaciones::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-citaciones::-webkit-scrollbar-thumb {
+  background: #d4cdbf;
+  border-radius: 2px;
+}
+
+.scrollbar-citaciones::-webkit-scrollbar-thumb:hover {
+  background: #c4bfb0;
+}
+
+/* ===== Animación de pensamiento/reasoning ===== */
+
+@keyframes girar-pensamiento {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.icono-pensamiento-girando {
+  animation: girar-pensamiento 1s linear infinite;
+}
+

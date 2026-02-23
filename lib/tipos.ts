@@ -8,11 +8,36 @@ export interface Adjunto {
   tipoMime: string
 }
 
+export interface CitacionWeb {
+  url: string
+  titulo: string
+  indiceInicio: number
+  indiceFin: number
+}
+
+export interface FuenteWeb {
+  url: string
+}
+
+export interface InfoBusquedaWeb {
+  estado: "iniciada" | "buscando" | "completada"
+  consultas: string[]
+  fuentes: FuenteWeb[]
+}
+
+export interface InfoPensamiento {
+  estado: "pensando" | "completado"
+  resumen: string
+}
+
 export interface Mensaje {
   id: string
   rol: "usuario" | "asistente"
   contenido: string
   adjuntos?: Adjunto[]
+  citaciones?: CitacionWeb[]
+  busquedaWeb?: InfoBusquedaWeb
+  pensamiento?: InfoPensamiento
   fechaCreacion: Date
 }
 
@@ -53,4 +78,7 @@ export interface AccionesChat {
   seleccionarModelo: (idModelo: string) => void
   editarYRecortarMensajes: (conversacionId: string, idMensaje: string, nuevoContenido: string) => void
   recortarMensajesDesde: (conversacionId: string, indiceDesde: number) => void
+  actualizarBusquedaUltimoMensaje: (conversacionId: string, busquedaWeb: InfoBusquedaWeb) => void
+  agregarCitacionUltimoMensaje: (conversacionId: string, citacion: CitacionWeb) => void
+  actualizarPensamientoUltimoMensaje: (conversacionId: string, pensamiento: InfoPensamiento) => void
 }

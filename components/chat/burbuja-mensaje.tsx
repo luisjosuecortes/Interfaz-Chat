@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useState, useRef, useEffect } from "react"
 import { RenderizadorMarkdown } from "@/components/chat/renderizador-markdown"
+import { IndicadorBusqueda } from "@/components/chat/indicador-busqueda"
+import { TarjetasCitacion } from "@/components/chat/tarjetas-citacion"
+import { IndicadorPensamiento } from "@/components/chat/indicador-pensamiento"
 
 interface PropiedadesBurbuja {
   mensaje: Mensaje
@@ -187,14 +190,14 @@ export function BurbujaMensaje({
       {/* Contenido del mensaje */}
       <div
         className={cn(
-          "relative max-w-[85%]",
+          "relative max-w-[85%] min-w-0",
           esUsuario ? "flex flex-col items-end" : "flex flex-col items-start"
         )}
       >
         {/* Burbuja */}
         <div
           className={cn(
-            "rounded-2xl px-4 py-3 text-sm leading-relaxed",
+            "rounded-2xl px-4 py-3 text-sm leading-relaxed min-w-0 max-w-full",
             esUsuario
               ? "bg-[var(--color-claude-usuario-burbuja)] text-[var(--color-claude-texto)] rounded-br-md"
               : "bg-transparent text-[var(--color-claude-texto)]"
@@ -262,10 +265,24 @@ export function BurbujaMensaje({
               {mensaje.contenido}
             </div>
           ) : (
-            <div className="prosa-markdown break-words">
-              <RenderizadorMarkdown contenido={mensaje.contenido} />
-              {estaEscribiendoEste && <span className="cursor-parpadeo" />}
-            </div>
+            <>
+              {/* Indicador de pensamiento/reasoning */}
+              {mensaje.pensamiento && (
+                <IndicadorPensamiento pensamiento={mensaje.pensamiento} />
+              )}
+              {/* Indicador de búsqueda web */}
+              {mensaje.busquedaWeb && (
+                <IndicadorBusqueda busquedaWeb={mensaje.busquedaWeb} />
+              )}
+              <div className="prosa-markdown break-words">
+                <RenderizadorMarkdown contenido={mensaje.contenido} />
+                {estaEscribiendoEste && <span className="cursor-parpadeo" />}
+              </div>
+              {/* Tarjetas de citaciones (fuera de prosa-markdown para evitar herencia de estilos) */}
+              {mensaje.citaciones && mensaje.citaciones.length > 0 && (
+                <TarjetasCitacion citaciones={mensaje.citaciones} />
+              )}
+            </>
           )}
         </div>
 

@@ -30,6 +30,9 @@ export function ContenedorChat() {
     conversacionActiva,
     editarYRecortarMensajes,
     recortarMensajesDesde,
+    actualizarBusquedaUltimoMensaje,
+    agregarCitacionUltimoMensaje,
+    actualizarPensamientoUltimoMensaje,
   } = useAlmacenChat()
 
   const [mensajeError, establecerMensajeError] = useState<string | null>(null)
@@ -84,6 +87,7 @@ export function ContenedorChat() {
     // Throttle para limitar re-renders durante streaming
     let ultimaActualizacionUI = 0
     let textoRespuestaFinal = ""
+    let resumenPensamientoAcumulado = ""
 
     await enviarMensajeConStreaming({
       mensajes: historialMensajes,
@@ -116,6 +120,50 @@ export function ContenedorChat() {
         establecerMensajeError(error)
         establecerEscribiendo(false)
         referenciaControlador.current = null
+      },
+      alBusquedaIniciada: () => {
+        actualizarBusquedaUltimoMensaje(idConversacion, {
+          estado: "iniciada",
+          consultas: [],
+          fuentes: [],
+        })
+      },
+      alBusquedaBuscando: () => {
+        actualizarBusquedaUltimoMensaje(idConversacion, {
+          estado: "buscando",
+          consultas: [],
+          fuentes: [],
+        })
+      },
+      alBusquedaResultado: (consultas, fuentes) => {
+        actualizarBusquedaUltimoMensaje(idConversacion, {
+          estado: "completada",
+          consultas,
+          fuentes,
+        })
+      },
+      alCitacion: (citacion) => {
+        agregarCitacionUltimoMensaje(idConversacion, citacion)
+      },
+      alPensamientoIniciado: () => {
+        resumenPensamientoAcumulado = ""
+        actualizarPensamientoUltimoMensaje(idConversacion, {
+          estado: "pensando",
+          resumen: "",
+        })
+      },
+      alPensamientoDelta: (delta) => {
+        resumenPensamientoAcumulado += delta
+        actualizarPensamientoUltimoMensaje(idConversacion, {
+          estado: "pensando",
+          resumen: resumenPensamientoAcumulado,
+        })
+      },
+      alPensamientoCompletado: () => {
+        actualizarPensamientoUltimoMensaje(idConversacion, {
+          estado: "completado",
+          resumen: resumenPensamientoAcumulado,
+        })
       },
     })
   }

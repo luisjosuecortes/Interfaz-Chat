@@ -29,6 +29,15 @@ const MAPA_ROLES: Record<string, "user" | "assistant"> = {
   asistente: "assistant",
 }
 
+// Modelos que soportan reasoning (GPT-5.x y o-series)
+const MODELOS_CON_REASONING = new Set([
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+])
+
 // Tipo para el contenido multimodal de la Responses API
 type ContenidoMultimodal = (
   | { type: "input_text"; text: string }
@@ -51,6 +60,8 @@ export async function POST(solicitud: Request) {
   try {
     const { mensajes, modelo, adjuntos } = (await solicitud.json()) as CuerpoSolicitud
 
+    const modeloFinal = modelo || "gpt-4o-mini"
+
     // Convertir mensajes al formato de la Responses API
     const entradaMensajes = mensajes.map((mensaje, indice) => {
       const rol = MAPA_ROLES[mensaje.rol] ?? ("user" as const)
@@ -61,12 +72,10 @@ export async function POST(solicitud: Request) {
       if (esUltimoMensajeUsuario && adjuntos && adjuntos.length > 0) {
         const partes: ContenidoMultimodal[] = []
 
-        // Agregar texto del mensaje
         if (mensaje.contenido) {
           partes.push({ type: "input_text", text: mensaje.contenido })
         }
 
-        // Agregar adjuntos
         for (const adjunto of adjuntos) {
           if (adjunto.tipo === "imagen") {
             partes.push({
@@ -89,12 +98,25 @@ export async function POST(solicitud: Request) {
       return { role: rol, content: mensaje.contenido }
     })
 
-    // Hacer la solicitud con streaming usando la Responses API
+    // Configurar reasoning para modelos que lo soportan
+    const soportaReasoning = MODELOS_CON_REASONING.has(modeloFinal)
+
     const respuestaStream = await clienteOpenAI.responses.create({
-      model: modelo || "gpt-4o-mini",
+      model: modeloFinal,
       input: entradaMensajes,
       stream: true,
       max_output_tokens: 4096,
+      tools: [{
+        type: "web_search" as const,
+        search_context_size: "medium" as const,
+      }],
+      include: ["web_search_call.action.sources"],
+      ...(soportaReasoning && {
+        reasoning: {
+          effort: "medium" as const,
+          summary: "concise" as const,
+        },
+      }),
     })
 
     // Crear un ReadableStream para enviar los chunks al cliente
@@ -102,18 +124,105 @@ export async function POST(solicitud: Request) {
       async start(controlador) {
         const codificador = new TextEncoder()
 
+        function enviarEvento(datos: Record<string, unknown>) {
+          controlador.enqueue(
+            codificador.encode(`data: ${JSON.stringify(datos)}\n\n`)
+          )
+        }
+
         try {
           for await (const evento of respuestaStream) {
-            // Capturar los deltas de texto de la respuesta
+            // === Eventos de Reasoning/Pensamiento ===
+
+            // Inicio de resumen de razonamiento
+            if (evento.type === "response.reasoning_summary_part.added") {
+              enviarEvento({ tipo: "pensamiento_iniciado" })
+            }
+
+            // Delta de texto de razonamiento (streaming del resumen)
+            if (evento.type === "response.reasoning_summary_text.delta") {
+              const delta = (evento as unknown as Record<string, unknown>).delta as string
+              if (delta) {
+                enviarEvento({ tipo: "pensamiento_delta", delta })
+              }
+            }
+
+            // Resumen de razonamiento completado
+            if (evento.type === "response.reasoning_summary_text.done") {
+              enviarEvento({ tipo: "pensamiento_completado" })
+            }
+
+            // === Eventos de Búsqueda Web ===
+
+            if (evento.type === "response.web_search_call.in_progress") {
+              enviarEvento({ tipo: "busqueda_iniciada" })
+            }
+
+            if (evento.type === "response.web_search_call.searching") {
+              enviarEvento({ tipo: "busqueda_buscando" })
+            }
+
+            if (evento.type === "response.web_search_call.completed") {
+              enviarEvento({ tipo: "busqueda_completada" })
+            }
+
+            // Item de output completado (puede ser web_search_call con resultados)
+            if (evento.type === "response.output_item.done") {
+              const item = evento.item as unknown as Record<string, unknown>
+              if (item.type === "web_search_call") {
+                const accion = item.action as Record<string, unknown> | undefined
+                const consultas: string[] = []
+                const fuentes: Array<{ url: string }> = []
+
+                if (accion) {
+                  if (Array.isArray(accion.queries)) {
+                    consultas.push(...(accion.queries as string[]))
+                  }
+                  if (typeof accion.query === "string") {
+                    consultas.push(accion.query)
+                  }
+                  if (Array.isArray(accion.sources)) {
+                    for (const fuente of accion.sources) {
+                      const f = fuente as Record<string, unknown>
+                      if (typeof f.url === "string") {
+                        fuentes.push({ url: f.url })
+                      }
+                    }
+                  }
+                }
+
+                enviarEvento({
+                  tipo: "busqueda_resultado",
+                  consultas,
+                  fuentes,
+                })
+              }
+            }
+
+            // Anotación de citación (url_citation)
+            if (evento.type === "response.output_text.annotation.added") {
+              const anotacion = evento.annotation as Record<string, unknown>
+              if (anotacion.type === "url_citation") {
+                enviarEvento({
+                  tipo: "citacion",
+                  citacion: {
+                    url: anotacion.url ?? "",
+                    titulo: anotacion.title ?? "",
+                    indiceInicio: anotacion.start_index ?? 0,
+                    indiceFin: anotacion.end_index ?? 0,
+                  },
+                })
+              }
+            }
+
+            // === Deltas de texto de la respuesta ===
             if (
               evento.type === "response.output_text.delta" &&
               "delta" in evento
             ) {
               const contenido = evento.delta as string
               if (contenido) {
-                controlador.enqueue(
-                  codificador.encode(`data: ${JSON.stringify({ contenido })}\n\n`)
-                )
+                enviarEvento({ contenido })
               }
             }
 
@@ -125,7 +234,6 @@ export async function POST(solicitud: Request) {
             }
           }
 
-          // Si el stream termina sin evento de completado
           controlador.enqueue(codificador.encode("data: [FIN]\n\n"))
           controlador.close()
         } catch (error) {
