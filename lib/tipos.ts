@@ -51,4 +51,6 @@ export interface AccionesChat {
   establecerEscribiendo: (valor: boolean) => void
   renombrarConversacion: (id: string, titulo: string) => void
   seleccionarModelo: (idModelo: string) => void
+  editarYRecortarMensajes: (conversacionId: string, idMensaje: string, nuevoContenido: string) => void
+  recortarMensajesDesde: (conversacionId: string, indiceDesde: number) => void
 }

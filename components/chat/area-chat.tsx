@@ -20,6 +20,9 @@ interface PropiedadesAreaChat {
   alAlternarBarraLateral: () => void
   alSeleccionarModelo: (idModelo: string) => void
   alDetener: () => void
+  alEditarMensaje: (idMensaje: string, nuevoContenido: string) => void
+  alReenviarMensaje: (idMensaje: string) => void
+  alRegenerarRespuesta: (idMensaje: string) => void
 }
 
 export function AreaChat({
@@ -32,6 +35,9 @@ export function AreaChat({
   alAlternarBarraLateral,
   alSeleccionarModelo,
   alDetener,
+  alEditarMensaje,
+  alReenviarMensaje,
+  alRegenerarRespuesta,
 }: PropiedadesAreaChat) {
   const referenciaFinal = useRef<HTMLDivElement>(null)
 
@@ -89,11 +95,15 @@ export function AreaChat({
                 <BurbujaMensaje
                   key={mensaje.id}
                   mensaje={mensaje}
-                  estaEscribiendo={
+                  estaEscribiendoEste={
                     estaEscribiendo &&
                     indice === conversacion.mensajes.length - 1 &&
                     mensaje.rol === "asistente"
                   }
+                  estaGenerando={estaEscribiendo}
+                  alEditarMensaje={alEditarMensaje}
+                  alReenviarMensaje={alReenviarMensaje}
+                  alRegenerarRespuesta={alRegenerarRespuesta}
                 />
               ))}
               {mensajeError && (

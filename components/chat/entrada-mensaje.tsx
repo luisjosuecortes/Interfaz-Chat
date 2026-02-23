@@ -291,7 +291,7 @@ export function EntradaMensaje({
 
         {/* Texto informativo */}
         <p className="mt-2 text-center text-xs text-[var(--color-claude-texto-secundario)]">
-          ChatSLM puede cometer errores. Verifica la información importante.
+          PenguinChat puede cometer errores. Verifica la información importante.
         </p>
       </div>
     </div>

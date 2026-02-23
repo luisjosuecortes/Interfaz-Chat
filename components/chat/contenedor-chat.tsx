@@ -8,6 +8,9 @@ import { PantallaInicio } from "@/components/chat/pantalla-inicio"
 import { enviarMensajeConStreaming } from "@/lib/cliente-chat"
 import type { Adjunto } from "@/lib/tipos"
 
+// Intervalo minimo entre actualizaciones de UI durante streaming (ms)
+const INTERVALO_THROTTLE = 30
+
 export function ContenedorChat() {
   const {
     conversacionActual,
@@ -25,18 +28,20 @@ export function ContenedorChat() {
     renombrarConversacion,
     seleccionarModelo,
     conversacionActiva,
+    editarYRecortarMensajes,
+    recortarMensajesDesde,
   } = useAlmacenChat()
 
   const [mensajeError, establecerMensajeError] = useState<string | null>(null)
   const referenciaControlador = useRef<AbortController | null>(null)
 
   // Generar titulo con IA despues del primer intercambio
-  async function generarTituloConversacion(idConversacion: string, mensajeUsuario: string) {
+  async function generarTituloConversacion(
+    idConversacion: string,
+    mensajeUsuario: string,
+    respuestaAsistente: string
+  ) {
     try {
-      const conversacion = conversaciones.find((c) => c.id === idConversacion)
-      const respuestaAsistente =
-        conversacion?.mensajes[conversacion.mensajes.length - 1]?.contenido || ""
-
       const respuesta = await fetch("/api/titulo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -50,7 +55,7 @@ export function ContenedorChat() {
         }
       }
     } catch {
-      // Fallo silencioso: conservar titulo por substring
+      // Fallo silencioso: conservar titulo existente
     }
   }
 
@@ -60,11 +65,63 @@ export function ContenedorChat() {
     referenciaControlador.current = null
   }
 
-  // Logica centralizada de envio de mensajes
-  async function manejarEnvio(contenido: string, adjuntos?: Adjunto[]) {
+  // Helper compartido para enviar mensajes al modelo con streaming
+  async function enviarConsultaAlModelo(
+    idConversacion: string,
+    historialMensajes: Array<{ rol: "usuario" | "asistente"; contenido: string }>,
+    adjuntos?: Adjunto[],
+    debeGenerarTitulo?: boolean,
+    contenidoParaTitulo?: string
+  ) {
     establecerMensajeError(null)
 
-    // Si no hay conversacion activa, crear una nueva
+    const controlador = new AbortController()
+    referenciaControlador.current = controlador
+
+    establecerEscribiendo(true)
+    agregarMensaje(idConversacion, { rol: "asistente", contenido: "" })
+
+    // Throttle para limitar re-renders durante streaming
+    let ultimaActualizacionUI = 0
+    let textoRespuestaFinal = ""
+
+    await enviarMensajeConStreaming({
+      mensajes: historialMensajes,
+      modelo: modeloSeleccionado,
+      adjuntos,
+      senalAborto: controlador.signal,
+      alActualizar: (textoActual) => {
+        textoRespuestaFinal = textoActual
+        const ahora = Date.now()
+        if (ahora - ultimaActualizacionUI >= INTERVALO_THROTTLE) {
+          actualizarUltimoMensaje(idConversacion, textoActual)
+          ultimaActualizacionUI = ahora
+        }
+      },
+      alFinalizar: () => {
+        // Asegurar que el texto final completo se muestre
+        actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+        establecerEscribiendo(false)
+        referenciaControlador.current = null
+
+        if (debeGenerarTitulo && contenidoParaTitulo) {
+          generarTituloConversacion(idConversacion, contenidoParaTitulo, textoRespuestaFinal)
+        }
+      },
+      alError: (error) => {
+        // Asegurar que el texto parcial se muestre
+        if (textoRespuestaFinal) {
+          actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+        }
+        establecerMensajeError(error)
+        establecerEscribiendo(false)
+        referenciaControlador.current = null
+      },
+    })
+  }
+
+  // Enviar un nuevo mensaje (flujo principal)
+  async function manejarEnvio(contenido: string, adjuntos?: Adjunto[]) {
     let idConversacion = conversacionActiva
     const mensajesPrevios = conversacionActual?.mensajes ?? []
     const esPrimerMensaje = mensajesPrevios.length === 0
@@ -73,10 +130,8 @@ export function ContenedorChat() {
       idConversacion = crearConversacion()
     }
 
-    // Agregar mensaje del usuario (con adjuntos si los hay)
     agregarMensaje(idConversacion, { rol: "usuario", contenido, adjuntos })
 
-    // Preparar historial para la API (solo texto, adjuntos van por separado)
     const historialMensajes = [
       ...mensajesPrevios.map((m) => ({
         rol: m.rol,
@@ -85,37 +140,111 @@ export function ContenedorChat() {
       { rol: "usuario" as const, contenido },
     ]
 
-    // Crear controlador de cancelacion para esta solicitud
-    const controlador = new AbortController()
-    referenciaControlador.current = controlador
-
-    // Iniciar respuesta del asistente
-    establecerEscribiendo(true)
-    agregarMensaje(idConversacion, { rol: "asistente", contenido: "" })
-
-    await enviarMensajeConStreaming({
-      mensajes: historialMensajes,
-      modelo: modeloSeleccionado,
+    await enviarConsultaAlModelo(
+      idConversacion,
+      historialMensajes,
       adjuntos,
-      senalAborto: controlador.signal,
-      alActualizar: (textoActual) => {
-        actualizarUltimoMensaje(idConversacion!, textoActual)
-      },
-      alFinalizar: () => {
-        establecerEscribiendo(false)
-        referenciaControlador.current = null
+      esPrimerMensaje,
+      contenido
+    )
+  }
 
-        // Generar titulo con IA despues del primer intercambio
-        if (esPrimerMensaje && idConversacion) {
-          generarTituloConversacion(idConversacion, contenido)
-        }
-      },
-      alError: (error) => {
-        establecerMensajeError(error)
-        establecerEscribiendo(false)
-        referenciaControlador.current = null
-      },
-    })
+  // Editar un mensaje del usuario y reenviar
+  async function manejarEdicionMensaje(idMensaje: string, nuevoContenido: string) {
+    if (!conversacionActiva || !conversacionActual) return
+    if (estaEscribiendo) return
+
+    const indiceMensaje = conversacionActual.mensajes.findIndex((m) => m.id === idMensaje)
+    if (indiceMensaje === -1) return
+
+    const mensajeOriginal = conversacionActual.mensajes[indiceMensaje]
+
+    // Construir historial hasta este mensaje con contenido editado
+    const historialMensajes = conversacionActual.mensajes.slice(0, indiceMensaje).map((m) => ({
+      rol: m.rol,
+      contenido: m.contenido,
+    }))
+    historialMensajes.push({ rol: "usuario", contenido: nuevoContenido })
+
+    // Actualizar store: cambiar contenido y eliminar mensajes posteriores
+    editarYRecortarMensajes(conversacionActiva, idMensaje, nuevoContenido)
+
+    const esPrimerMensaje = indiceMensaje === 0
+
+    await enviarConsultaAlModelo(
+      conversacionActiva,
+      historialMensajes,
+      mensajeOriginal.adjuntos,
+      esPrimerMensaje,
+      nuevoContenido
+    )
+  }
+
+  // Reenviar un mensaje del usuario (mismo contenido, nueva respuesta)
+  async function manejarReenvioMensaje(idMensaje: string) {
+    if (!conversacionActiva || !conversacionActual) return
+    if (estaEscribiendo) return
+
+    const indiceMensaje = conversacionActual.mensajes.findIndex((m) => m.id === idMensaje)
+    if (indiceMensaje === -1) return
+
+    const mensaje = conversacionActual.mensajes[indiceMensaje]
+
+    // Construir historial hasta e incluyendo este mensaje
+    const historialMensajes = conversacionActual.mensajes.slice(0, indiceMensaje + 1).map((m) => ({
+      rol: m.rol,
+      contenido: m.contenido,
+    }))
+
+    // Eliminar todo despues de este mensaje
+    recortarMensajesDesde(conversacionActiva, indiceMensaje + 1)
+
+    const esPrimerMensaje = indiceMensaje === 0
+
+    await enviarConsultaAlModelo(
+      conversacionActiva,
+      historialMensajes,
+      mensaje.adjuntos,
+      esPrimerMensaje,
+      mensaje.contenido
+    )
+  }
+
+  // Regenerar la respuesta del asistente
+  async function manejarRegenerarRespuesta(idMensajeAsistente: string) {
+    if (!conversacionActiva || !conversacionActual) return
+    if (estaEscribiendo) return
+
+    const indiceMensaje = conversacionActual.mensajes.findIndex((m) => m.id === idMensajeAsistente)
+    if (indiceMensaje === -1) return
+
+    // Encontrar el mensaje del usuario previo a esta respuesta
+    let indiceUsuario = indiceMensaje - 1
+    while (indiceUsuario >= 0 && conversacionActual.mensajes[indiceUsuario].rol !== "usuario") {
+      indiceUsuario--
+    }
+    if (indiceUsuario < 0) return
+
+    const mensajeUsuario = conversacionActual.mensajes[indiceUsuario]
+
+    // Construir historial hasta e incluyendo el mensaje del usuario
+    const historialMensajes = conversacionActual.mensajes.slice(0, indiceUsuario + 1).map((m) => ({
+      rol: m.rol,
+      contenido: m.contenido,
+    }))
+
+    // Eliminar desde la respuesta del asistente en adelante
+    recortarMensajesDesde(conversacionActiva, indiceMensaje)
+
+    const esPrimerMensaje = indiceUsuario === 0
+
+    await enviarConsultaAlModelo(
+      conversacionActiva,
+      historialMensajes,
+      mensajeUsuario.adjuntos,
+      esPrimerMensaje,
+      mensajeUsuario.contenido
+    )
   }
 
   return (
@@ -145,6 +274,9 @@ export function ContenedorChat() {
             alAlternarBarraLateral={alternarBarraLateral}
             alSeleccionarModelo={seleccionarModelo}
             alDetener={detenerGeneracion}
+            alEditarMensaje={manejarEdicionMensaje}
+            alReenviarMensaje={manejarReenvioMensaje}
+            alRegenerarRespuesta={manejarRegenerarRespuesta}
           />
         ) : (
           <PantallaInicio

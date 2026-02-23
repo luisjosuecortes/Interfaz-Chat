@@ -49,13 +49,17 @@ export async function enviarMensajeConStreaming({
 
     const decodificador = new TextDecoder()
     let textoAcumulado = ""
+    let bufferIncompleto = ""
 
     while (true) {
       const { done, value } = await lector.read()
       if (done) break
 
-      const fragmento = decodificador.decode(value, { stream: true })
-      const lineas = fragmento.split("\n")
+      bufferIncompleto += decodificador.decode(value, { stream: true })
+      const lineas = bufferIncompleto.split("\n")
+
+      // Conservar la ultima linea potencialmente incompleta en el buffer
+      bufferIncompleto = lineas.pop() || ""
 
       for (const linea of lineas) {
         if (linea.startsWith("data: ")) {

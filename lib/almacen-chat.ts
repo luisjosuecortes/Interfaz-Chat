@@ -147,6 +147,42 @@ const acciones: AccionesChat = {
       modeloSeleccionado: idModelo,
     }))
   },
+
+  editarYRecortarMensajes: (conversacionId: string, idMensaje: string, nuevoContenido: string) => {
+    establecerEstado((previo) => ({
+      ...previo,
+      conversaciones: previo.conversaciones.map((c) => {
+        if (c.id !== conversacionId) return c
+        const indiceMensaje = c.mensajes.findIndex((m) => m.id === idMensaje)
+        if (indiceMensaje === -1) return c
+        const mensajesRecortados = c.mensajes.slice(0, indiceMensaje + 1)
+        mensajesRecortados[indiceMensaje] = {
+          ...mensajesRecortados[indiceMensaje],
+          contenido: nuevoContenido,
+        }
+        return {
+          ...c,
+          mensajes: mensajesRecortados,
+          fechaActualizacion: new Date(),
+        }
+      }),
+    }))
+  },
+
+  recortarMensajesDesde: (conversacionId: string, indiceDesde: number) => {
+    establecerEstado((previo) => ({
+      ...previo,
+      conversaciones: previo.conversaciones.map((c) => {
+        if (c.id !== conversacionId) return c
+        if (indiceDesde >= c.mensajes.length) return c
+        return {
+          ...c,
+          mensajes: c.mensajes.slice(0, indiceDesde),
+          fechaActualizacion: new Date(),
+        }
+      }),
+    }))
+  },
 }
 
 // Hook personalizado para usar el store
