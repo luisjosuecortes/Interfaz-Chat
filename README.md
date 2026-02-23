@@ -52,7 +52,5 @@ git commit -m "Descripción de los cambios"
 git push origin main
 ```
 
-
-
 ## 🤝 Colaboradores WEB
 - Luis Cortés

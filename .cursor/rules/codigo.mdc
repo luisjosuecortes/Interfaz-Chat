@@ -1,0 +1,12 @@
+---
+alwaysApply: true
+---
+
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Always prefer simple, understandable, and interpretable code over premature optimizations. Look for documentation on how to do it, look the internet, whether for libraries or existing projects.
+
+Do everything completely in Spanish, the variables, the code, everything.
