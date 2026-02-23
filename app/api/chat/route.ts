@@ -1,5 +1,6 @@
 import OpenAI from "openai"
 import { NextResponse } from "next/server"
+import { obtenerModelo } from "@/lib/modelos"
 
 // Interfaz para adjuntos que llegan del cliente
 interface AdjuntoEntrada {
@@ -28,15 +29,6 @@ const MAPA_ROLES: Record<string, "user" | "assistant"> = {
   usuario: "user",
   asistente: "assistant",
 }
-
-// Modelos que soportan reasoning (GPT-5.x y o-series)
-const MODELOS_CON_REASONING = new Set([
-  "gpt-5.2",
-  "gpt-5.1",
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-5-nano",
-])
 
 // Tipo para el contenido multimodal de la Responses API
 type ContenidoMultimodal = (
@@ -99,7 +91,7 @@ export async function POST(solicitud: Request) {
     })
 
     // Configurar reasoning para modelos que lo soportan
-    const soportaReasoning = MODELOS_CON_REASONING.has(modeloFinal)
+    const soportaReasoning = obtenerModelo(modeloFinal)?.tieneReasoning ?? false
 
     const respuestaStream = await clienteOpenAI.responses.create({
       model: modeloFinal,

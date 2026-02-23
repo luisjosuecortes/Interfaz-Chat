@@ -28,6 +28,7 @@ export function ContenedorChat() {
     renombrarConversacion,
     seleccionarModelo,
     conversacionActiva,
+    iniciarNuevaConversacion,
     editarYRecortarMensajes,
     recortarMensajesDesde,
     actualizarBusquedaUltimoMensaje,
@@ -82,7 +83,7 @@ export function ContenedorChat() {
     referenciaControlador.current = controlador
 
     establecerEscribiendo(true)
-    agregarMensaje(idConversacion, { rol: "asistente", contenido: "" })
+    agregarMensaje(idConversacion, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
 
     // Throttle para limitar re-renders durante streaming
     let ultimaActualizacionUI = 0
@@ -303,7 +304,7 @@ export function ContenedorChat() {
         conversaciones={conversaciones}
         conversacionActiva={conversacionActiva}
         alAlternar={alternarBarraLateral}
-        alNuevaConversacion={crearConversacion}
+        alNuevaConversacion={iniciarNuevaConversacion}
         alSeleccionarConversacion={seleccionarConversacion}
         alEliminarConversacion={eliminarConversacion}
         alRenombrarConversacion={renombrarConversacion}
@@ -325,6 +326,7 @@ export function ContenedorChat() {
             alEditarMensaje={manejarEdicionMensaje}
             alReenviarMensaje={manejarReenvioMensaje}
             alRegenerarRespuesta={manejarRegenerarRespuesta}
+            alRenombrarConversacion={renombrarConversacion}
           />
         ) : (
           <PantallaInicio

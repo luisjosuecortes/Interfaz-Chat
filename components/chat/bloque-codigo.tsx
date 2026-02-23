@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
 import { Copy, Check } from "lucide-react"
+import { useCopiarAlPortapapeles } from "@/lib/hooks"
 import { PrismLight as ResaltadorSintaxis } from "react-syntax-highlighter"
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism"
 
@@ -131,15 +131,8 @@ interface PropiedadesBloqueCodigo {
 }
 
 export function BloqueCodigoConResaltado({ codigo, lenguaje }: PropiedadesBloqueCodigo) {
-  const [haCopiado, establecerHaCopiado] = useState(false)
-
+  const { haCopiado, copiar } = useCopiarAlPortapapeles()
   const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
-
-  async function copiarCodigo() {
-    await navigator.clipboard.writeText(codigo)
-    establecerHaCopiado(true)
-    setTimeout(() => establecerHaCopiado(false), 2000)
-  }
 
   return (
     <div className="my-3 rounded-lg overflow-hidden border border-[#374151]">
@@ -147,7 +140,7 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje }: PropiedadesBloque
       <div className="flex items-center justify-between px-4 py-2 bg-[#1e1e2e]">
         <span className="text-xs text-gray-400 font-mono">{nombreLenguaje}</span>
         <button
-          onClick={copiarCodigo}
+          onClick={() => copiar(codigo)}
           className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
         >
           {haCopiado ? (

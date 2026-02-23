@@ -6,10 +6,13 @@ import { Copy, Check, FileText, Pencil, RotateCcw, X, ArrowUp } from "lucide-rea
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useState, useRef, useEffect } from "react"
+import { useCopiarAlPortapapeles } from "@/lib/hooks"
+import { AvatarAsistente } from "@/components/ui/icono-sparkle"
 import { RenderizadorMarkdown } from "@/components/chat/renderizador-markdown"
 import { IndicadorBusqueda } from "@/components/chat/indicador-busqueda"
 import { TarjetasCitacion } from "@/components/chat/tarjetas-citacion"
 import { IndicadorPensamiento } from "@/components/chat/indicador-pensamiento"
+import { obtenerNombreModelo } from "@/lib/modelos"
 
 interface PropiedadesBurbuja {
   mensaje: Mensaje
@@ -28,7 +31,7 @@ export function BurbujaMensaje({
   alReenviarMensaje,
   alRegenerarRespuesta,
 }: PropiedadesBurbuja) {
-  const [haCopiado, establecerHaCopiado] = useState(false)
+  const { haCopiado, copiar } = useCopiarAlPortapapeles()
   const [estaEditando, establecerEstaEditando] = useState(false)
   const [textoEdicion, establecerTextoEdicion] = useState("")
   const referenciaTextarea = useRef<HTMLTextAreaElement>(null)
@@ -45,12 +48,6 @@ export function BurbujaMensaje({
       textarea.selectionEnd = textarea.value.length
     }
   }, [estaEditando])
-
-  async function copiarContenido() {
-    await navigator.clipboard.writeText(mensaje.contenido)
-    establecerHaCopiado(true)
-    setTimeout(() => establecerHaCopiado(false), 2000)
-  }
 
   function iniciarEdicion() {
     establecerTextoEdicion(mensaje.contenido)
@@ -108,7 +105,7 @@ export function BurbujaMensaje({
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
-            onClick={copiarContenido}
+            onClick={() => copiar(mensaje.contenido)}
           >
             {haCopiado ? (
               <Check className="h-3.5 w-3.5 text-green-500" />
@@ -135,7 +132,7 @@ export function BurbujaMensaje({
     </div>
   )
 
-  // Botones de accion del asistente (copiar, regenerar)
+  // Botones de accion del asistente (copiar, regenerar, modelo)
   const botonesAsistente = !esUsuario && mensaje.contenido && !estaEscribiendoEste && !estaGenerando && (
     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity mt-1">
       <Tooltip>
@@ -144,7 +141,7 @@ export function BurbujaMensaje({
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
-            onClick={copiarContenido}
+            onClick={() => copiar(mensaje.contenido)}
           >
             {haCopiado ? (
               <Check className="h-3.5 w-3.5 text-green-500" />
@@ -168,6 +165,12 @@ export function BurbujaMensaje({
         </TooltipTrigger>
         <TooltipContent>Regenerar respuesta</TooltipContent>
       </Tooltip>
+      {/* Nombre del modelo que genero la respuesta */}
+      {mensaje.modelo && (
+        <span className="ml-1.5 text-[11px] text-[var(--color-claude-texto-secundario)] font-medium select-none">
+          {obtenerNombreModelo(mensaje.modelo)}
+        </span>
+      )}
     </div>
   )
 
@@ -178,12 +181,10 @@ export function BurbujaMensaje({
         esUsuario ? "justify-end" : "justify-start"
       )}
     >
-      {/* Avatar del asistente - sparkle estilo Claude */}
+      {/* Avatar del asistente */}
       {!esUsuario && (
-        <div className="mt-1 h-7 w-7 shrink-0 rounded-full bg-gradient-to-br from-[var(--color-claude-acento)] to-[#e8956d] flex items-center justify-center">
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M8 1L6.5 6.5L1 8L6.5 9.5L8 15L9.5 9.5L15 8L9.5 6.5L8 1Z" fill="white" />
-          </svg>
+        <div className="mt-1">
+          <AvatarAsistente tamano="sm" />
         </div>
       )}
 

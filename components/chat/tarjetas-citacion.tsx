@@ -100,13 +100,13 @@ export function TarjetasCitacion({ citaciones }: PropiedadesTarjetasCitacion) {
           onScroll={actualizarFades}
           className="flex gap-2 overflow-x-auto pb-2 scrollbar-citaciones"
         >
-          {citacionesUnicas.map((citacion, indice) => {
+          {citacionesUnicas.map((citacion) => {
             const idYoutube = extraerIdVideoYoutube(citacion.url)
             const dominio = extraerDominio(citacion.url)
 
             return (
               <a
-                key={`${citacion.url}-${indice}`}
+                key={citacion.url}
                 href={citacion.url}
                 target="_blank"
                 rel="noopener noreferrer"

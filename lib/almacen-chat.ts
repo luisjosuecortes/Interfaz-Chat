@@ -3,11 +3,7 @@
 import { useSyncExternalStore } from "react"
 import type { EstadoChat, AccionesChat, Mensaje, Conversacion, InfoBusquedaWeb, CitacionWeb, InfoPensamiento } from "./tipos"
 import { MODELO_POR_DEFECTO } from "./modelos"
-
-// Generador de IDs simple
-function generarId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).substring(2, 9)
-}
+import { generarId } from "./utils"
 
 // Estado inicial
 const estadoInicial: EstadoChat = {
@@ -53,6 +49,13 @@ const acciones: AccionesChat = {
       conversacionActiva: id,
     }))
     return id
+  },
+
+  iniciarNuevaConversacion: () => {
+    establecerEstado((previo) => ({
+      ...previo,
+      conversacionActiva: null,
+    }))
   },
 
   eliminarConversacion: (id: string) => {

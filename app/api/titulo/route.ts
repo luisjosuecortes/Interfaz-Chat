@@ -11,7 +11,7 @@ export async function POST(solicitud: Request) {
 
   if (!claveApi) {
     return NextResponse.json(
-      { error: "La clave de API de OpenAI no esta configurada" },
+      { error: "La clave de API de OpenAI no está configurada" },
       { status: 500 }
     )
   }

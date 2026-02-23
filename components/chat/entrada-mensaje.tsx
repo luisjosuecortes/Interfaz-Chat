@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef, useCallback } from "react"
-import { ArrowUp, Paperclip, X, ChevronDown, Check, Square, Image as ImageIcon, FileText } from "lucide-react"
+import { ArrowUp, Paperclip, X, ChevronDown, Check, Square, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -12,22 +12,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { cn } from "@/lib/utils"
+import { cn, generarId } from "@/lib/utils"
 import type { Adjunto } from "@/lib/tipos"
-import { MODELOS_DISPONIBLES, obtenerNombreModelo } from "@/lib/modelos"
+import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS } from "@/lib/modelos"
 
 // Tipos de archivos aceptados
 const TIPOS_IMAGEN = "image/png,image/jpeg,image/gif,image/webp"
 const TIPOS_ARCHIVO = ".txt,.md,.csv,.json,.xml,.html,.css,.js,.ts,.py,.pdf"
-
-// Categorías de modelos para el dropdown
-const CATEGORIAS_MODELOS = [
-  { clave: "gpt-5.2", etiqueta: "GPT-5.2" },
-  { clave: "gpt-5.1", etiqueta: "GPT-5.1" },
-  { clave: "gpt-5", etiqueta: "GPT-5" },
-  { clave: "gpt-4.1", etiqueta: "GPT-4.1" },
-  { clave: "gpt-4o", etiqueta: "GPT-4o" },
-] as const
 
 interface PropiedadesEntrada {
   alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void
@@ -36,11 +27,6 @@ interface PropiedadesEntrada {
   alDetener?: () => void
   modeloSeleccionado: string
   alSeleccionarModelo: (idModelo: string) => void
-}
-
-// Generador de IDs simple
-function generarId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).substring(2, 9)
 }
 
 export function EntradaMensaje({

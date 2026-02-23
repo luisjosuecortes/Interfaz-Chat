@@ -34,6 +34,7 @@ export interface Mensaje {
   id: string
   rol: "usuario" | "asistente"
   contenido: string
+  modelo?: string
   adjuntos?: Adjunto[]
   citaciones?: CitacionWeb[]
   busquedaWeb?: InfoBusquedaWeb
@@ -55,6 +56,7 @@ export interface ModeloDisponible {
   nombre: string
   descripcion: string
   categoria: "gpt-5.2" | "gpt-5.1" | "gpt-5" | "gpt-4.1" | "gpt-4o"
+  tieneReasoning?: boolean
 }
 
 export interface EstadoChat {
@@ -68,6 +70,7 @@ export interface EstadoChat {
 // Acciones del store
 export interface AccionesChat {
   crearConversacion: () => string
+  iniciarNuevaConversacion: () => void
   eliminarConversacion: (id: string) => void
   seleccionarConversacion: (id: string) => void
   agregarMensaje: (conversacionId: string, mensaje: Omit<Mensaje, "id" | "fechaCreacion">) => void

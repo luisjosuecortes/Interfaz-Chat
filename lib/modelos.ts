@@ -9,6 +9,7 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     nombre: "GPT-5.2",
     descripcion: "El modelo más reciente y capaz de OpenAI",
     categoria: "gpt-5.2",
+    tieneReasoning: true,
   },
 
   // GPT-5.1 (noviembre 2025, recomendado para código y razonamiento)
@@ -17,6 +18,7 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     nombre: "GPT-5.1",
     descripcion: "Ideal para código, razonamiento y tareas agénticas",
     categoria: "gpt-5.1",
+    tieneReasoning: true,
   },
 
   // GPT-5 (agosto 2025)
@@ -25,18 +27,21 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     nombre: "GPT-5",
     descripcion: "Modelo base de propósito general de la familia GPT-5",
     categoria: "gpt-5",
+    tieneReasoning: true,
   },
   {
     id: "gpt-5-mini",
     nombre: "GPT-5 Mini",
     descripcion: "Versión rápida y eficiente de GPT-5",
     categoria: "gpt-5",
+    tieneReasoning: true,
   },
   {
     id: "gpt-5-nano",
     nombre: "GPT-5 Nano",
     descripcion: "El modelo más rápido y ultra-económico de la familia GPT-5",
     categoria: "gpt-5",
+    tieneReasoning: true,
   },
 
   // GPT-4.1 (2025, serie principal antes de GPT-5)
@@ -67,6 +72,15 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     categoria: "gpt-4o",
   },
 ]
+
+// Categorías para el selector de modelos — fuente única de verdad
+export const CATEGORIAS_MODELOS = [
+  { clave: "gpt-5.2", etiqueta: "GPT-5.2" },
+  { clave: "gpt-5.1", etiqueta: "GPT-5.1" },
+  { clave: "gpt-5", etiqueta: "GPT-5" },
+  { clave: "gpt-4.1", etiqueta: "GPT-4.1" },
+  { clave: "gpt-4o", etiqueta: "GPT-4o" },
+] as const
 
 export const MODELO_POR_DEFECTO = "gpt-4o-mini"
 

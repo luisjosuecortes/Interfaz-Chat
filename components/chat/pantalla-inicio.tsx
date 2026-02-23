@@ -3,6 +3,7 @@
 import { PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { AvatarAsistente } from "@/components/ui/icono-sparkle"
 import type { Adjunto } from "@/lib/tipos"
 import { EntradaMensaje } from "@/components/chat/entrada-mensaje"
 
@@ -24,7 +25,7 @@ export function PantallaInicio({
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden w-full">
       {/* Cabecera */}
-      <header className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-claude-input-border)]">
+      <header className="flex items-center gap-2 px-4 py-3">
         {!estaBarraLateralAbierta && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -45,12 +46,10 @@ export function PantallaInicio({
       {/* Contenido central */}
       <div className="flex flex-1 flex-col items-center justify-center px-4">
         <div className="max-w-2xl w-full text-center">
-          {/* Logo y título */}
+          {/* Logo y titulo */}
           <div className="mb-8">
-            <div className="mx-auto mb-5 h-16 w-16 rounded-full bg-gradient-to-br from-[var(--color-claude-acento)] to-[#e8956d] flex items-center justify-center shadow-md">
-              <svg width="28" height="28" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M8 1L6.5 6.5L1 8L6.5 9.5L8 15L9.5 9.5L15 8L9.5 6.5L8 1Z" fill="white" />
-              </svg>
+            <div className="flex justify-center mb-5">
+              <AvatarAsistente tamano="lg" />
             </div>
             <h1 className="text-3xl font-semibold text-[var(--color-claude-texto)] mb-2">
               ¿En qué puedo ayudarte hoy?
