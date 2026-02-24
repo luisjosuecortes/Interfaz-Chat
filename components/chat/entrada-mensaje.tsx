@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn, generarId } from "@/lib/utils"
 import type { Adjunto } from "@/lib/tipos"
-import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDORES } from "@/lib/modelos"
+import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDORES, obtenerProveedorDeModelo } from "@/lib/modelos"
 import { IconoProveedor } from "@/components/ui/iconos-proveedor"
 
 // Tipos de archivos aceptados
@@ -195,7 +195,16 @@ export function EntradaMensaje({
 
             <div className="flex items-center gap-2">
               {/* Selector de modelo con panel de proveedores */}
-              <Popover open={selectorAbierto} onOpenChange={establecerSelectorAbierto}>
+              <Popover
+                open={selectorAbierto}
+                onOpenChange={(abierto) => {
+                  establecerSelectorAbierto(abierto)
+                  if (abierto) {
+                    const proveedor = obtenerProveedorDeModelo(modeloSeleccionado)
+                    if (proveedor) establecerProveedorActivo(proveedor.id)
+                  }
+                }}
+              >
                 <PopoverTrigger asChild>
                   <Button
                     variant="ghost"
@@ -209,6 +218,7 @@ export function EntradaMensaje({
                   align="end"
                   sideOffset={8}
                   className="w-80 p-0 overflow-hidden"
+                  onOpenAutoFocus={(e) => e.preventDefault()}
                 >
                   <div className="flex">
                     {/* Barra lateral de proveedores */}

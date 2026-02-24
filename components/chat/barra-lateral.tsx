@@ -79,12 +79,13 @@ export function BarraLateral({
               <TooltipContent side="right">Cerrar barra lateral</TooltipContent>
             </Tooltip>
 
-            <span
-              className="text-base font-medium text-[var(--color-claude-texto)]"
+            <button
+              onClick={alNuevaConversacion}
+              className="text-base font-medium text-[var(--color-claude-texto)] hover:text-[var(--color-claude-acento)] transition-colors cursor-pointer"
               style={{ fontFamily: "var(--font-serif)" }}
             >
               PenguinChat
-            </span>
+            </button>
 
             <Tooltip>
               <TooltipTrigger asChild>
