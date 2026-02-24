@@ -77,9 +77,9 @@ export function AreaChat({
   }
 
   return (
-    <div className="flex flex-1 flex-col h-full overflow-hidden">
-      {/* Cabecera con título de conversación */}
-      <header className="flex items-center gap-2 px-4 py-3 bg-[var(--color-claude-bg)] shrink-0">
+    <div className="flex flex-1 flex-col h-full overflow-hidden relative">
+      {/* Barra superior flotante: boton sidebar + titulo */}
+      <div className="absolute top-3 left-3 z-20 flex items-center gap-1">
         {!estaBarraLateralAbierta && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -96,7 +96,7 @@ export function AreaChat({
           </Tooltip>
         )}
 
-        {/* Contenedor del titulo con ancho fijo */}
+        {/* Titulo de la conversacion editable */}
         {estaEditandoTitulo ? (
           <input
             ref={referenciaInputTitulo}
@@ -108,18 +108,18 @@ export function AreaChat({
               if (e.key === "Escape") cancelarEdicionTitulo()
             }}
             onBlur={confirmarEdicionTitulo}
-            className="w-64 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-sm font-medium px-3 py-1.5 rounded-lg border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-acento)]"
+            className="w-56 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-sm font-medium px-3 py-1.5 rounded-lg border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-acento)]"
           />
         ) : (
           <button
             onClick={iniciarEdicionTitulo}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors max-w-[280px] cursor-pointer"
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors max-w-[260px] cursor-pointer"
           >
-            <span className="truncate">{conversacion.titulo || "Nueva conversación"}</span>
+            <span className="truncate">{conversacion.titulo || "Nueva conversacion"}</span>
             <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-claude-texto-secundario)]" />
           </button>
         )}
-      </header>
+      </div>
 
       {/* Mensajes */}
       <ScrollArea className="flex-1 bg-[var(--color-claude-bg)] min-h-0">
@@ -133,7 +133,7 @@ export function AreaChat({
                 ¿En que puedo ayudarte hoy?
               </h2>
               <p className="text-sm text-[var(--color-claude-texto-secundario)] max-w-md">
-                Escribe un mensaje para comenzar la conversación
+                Escribe un mensaje para comenzar la conversacion
               </p>
             </div>
           ) : (
@@ -166,7 +166,6 @@ export function AreaChat({
 
       {/* Contenedor inferior opaco para cortar el scroll */}
       <div className="bg-[var(--color-claude-bg)] relative z-10 mx-auto w-full">
-        {/* Entrada de mensaje con selector de modelo integrado */}
         <EntradaMensaje
           alEnviar={alEnviar}
           estaDeshabilitado={estaEscribiendo}

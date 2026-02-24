@@ -23,10 +23,10 @@ export function PantallaInicio({
   alSeleccionarModelo,
 }: PropiedadesPantallaInicio) {
   return (
-    <div className="flex flex-1 flex-col h-full overflow-hidden w-full">
-      {/* Cabecera */}
-      <header className="flex items-center gap-2 px-4 py-3">
-        {!estaBarraLateralAbierta && (
+    <div className="flex flex-1 flex-col h-full overflow-hidden w-full relative">
+      {/* Boton flotante para abrir barra lateral (solo visible cuando esta cerrada) */}
+      {!estaBarraLateralAbierta && (
+        <div className="absolute top-3 left-3 z-20">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -40,8 +40,8 @@ export function PantallaInicio({
             </TooltipTrigger>
             <TooltipContent side="right">Abrir barra lateral</TooltipContent>
           </Tooltip>
-        )}
-      </header>
+        </div>
+      )}
 
       {/* Contenido central */}
       <div className="flex flex-1 flex-col items-center justify-center px-4">

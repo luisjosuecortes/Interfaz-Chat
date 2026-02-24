@@ -50,12 +50,19 @@ export interface Conversacion {
   fechaActualizacion: Date
 }
 
+// Definición de un proveedor de IA (OpenAI, Anthropic, Google, etc.)
+export interface ProveedorIA {
+  id: string
+  nombre: string
+}
+
 // Definición de un modelo disponible
 export interface ModeloDisponible {
   id: string
   nombre: string
   descripcion: string
-  categoria: "gpt-5.2" | "gpt-5.1" | "gpt-5" | "gpt-4.1" | "gpt-4o"
+  proveedor: string  // ID del proveedor (e.g. "openai", "anthropic")
+  categoria: string  // Familia del modelo (e.g. "gpt-5.2", "claude-4")
   tieneReasoning?: boolean
 }
 

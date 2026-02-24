@@ -2,7 +2,7 @@
 
 ## Descripcion General
 
-PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales y multiples modelos GPT.
+PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
 
 ---
 
@@ -22,12 +22,12 @@ chatslm/
 │
 ├── components/                   # Componentes de React
 │   ├── chat/                     # Componentes especificos del chat
-│   │   ├── area-chat.tsx         # Area de mensajes con scroll y titulo editable
+│   │   ├── area-chat.tsx         # Area de mensajes con titulo flotante y boton de sidebar
 │   │   ├── barra-lateral.tsx     # Sidebar con branding "PenguinChat" (tipografia serif) y lista de conversaciones
 │   │   ├── bloque-codigo.tsx     # Bloque de codigo con syntax highlighting
 │   │   ├── burbuja-mensaje.tsx   # Mensaje individual (usuario/asistente)
 │   │   ├── contenedor-chat.tsx   # Componente orquestador principal
-│   │   ├── entrada-mensaje.tsx   # Input con selector de modelos y adjuntos
+│   │   ├── entrada-mensaje.tsx   # Input con selector de modelos (Popover dos paneles) y adjuntos
 │   │   ├── indicador-busqueda.tsx    # Indicador de busqueda web activa
 │   │   ├── indicador-pensamiento.tsx # Indicador de reasoning/pensamiento
 │   │   ├── pantalla-inicio.tsx   # Pantalla inicial de bienvenida
@@ -38,6 +38,8 @@ chatslm/
 │       ├── button.tsx            # Boton con variantes (CVA)
 │       ├── dropdown-menu.tsx     # Menu desplegable (Radix UI)
 │       ├── icono-sparkle.tsx     # Icono sparkle y avatar del asistente
+│       ├── iconos-proveedor.tsx  # Iconos SVG de proveedores de IA (OpenAI, etc.)
+│       ├── popover.tsx           # Popover accesible (Radix UI)
 │       ├── scroll-area.tsx       # Area de scroll personalizada (con fix para Radix issue #926)
 │       ├── separator.tsx
 │       ├── sheet.tsx             # Panel lateral/drawer
@@ -47,7 +49,7 @@ chatslm/
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
 │   ├── cliente-chat.ts           # Cliente de streaming para la API
 │   ├── hooks.ts                  # Hooks personalizados reutilizables
-│   ├── modelos.ts                # Catalogo de modelos de OpenAI
+│   ├── modelos.ts                # Catalogo de modelos y proveedores de IA
 │   ├── tipos.ts                  # Tipos e interfaces TypeScript
 │   └── utils.ts                  # Utilidades (cn, generarId)
 │
@@ -258,27 +260,43 @@ Usa `gpt-4o-mini` con maximo 30 tokens para generar un titulo de 6 palabras.
 | `CitacionWeb` | Fuente web citada con URL, titulo e indices |
 | `InfoBusquedaWeb` | Estado de busqueda web con consultas y fuentes |
 | `InfoPensamiento` | Estado de reasoning con resumen |
-| `ModeloDisponible` | Definicion de un modelo con id, nombre, descripcion, categoria y `tieneReasoning` |
+| `ModeloDisponible` | Definicion de un modelo con id, nombre, descripcion, proveedor, categoria y `tieneReasoning` |
+| `ProveedorIA` | Definicion de un proveedor de IA con id y nombre |
 | `EstadoChat` | Estado global de la aplicacion |
 | `AccionesChat` | Todas las acciones disponibles del store |
 
 ---
 
-## Modelos Disponibles (`lib/modelos.ts`)
+## Modelos y Proveedores (`lib/modelos.ts`)
 
-Exporta `MODELOS_DISPONIBLES`, `CATEGORIAS_MODELOS` (fuente unica de verdad para el dropdown) y `MODELO_POR_DEFECTO`.
+Exporta `PROVEEDORES`, `MODELOS_DISPONIBLES`, `CATEGORIAS_MODELOS` (fuente unica de verdad) y `MODELO_POR_DEFECTO`.
 
-| Modelo | Categoria | Reasoning | Descripcion |
-|--------|-----------|-----------|-------------|
-| `gpt-5.2` | gpt-5.2 | Si | El mas reciente y capaz |
-| `gpt-5.1` | gpt-5.1 | Si | Ideal para codigo y razonamiento |
-| `gpt-5` | gpt-5 | Si | Proposito general de la familia GPT-5 |
-| `gpt-5-mini` | gpt-5 | Si | Version rapida de GPT-5 |
-| `gpt-5-nano` | gpt-5 | Si | Ultra-rapido y economico |
-| `gpt-4.1` | gpt-4.1 | No | Versatil y preciso |
-| `gpt-4.1-mini` | gpt-4.1 | No | Compacto y economico |
-| `gpt-4o` | gpt-4o | No | Multimodal de proposito general |
-| `gpt-4o-mini` | gpt-4o | No | Compacto y economico (modelo por defecto) |
+### Proveedores
+
+| Proveedor | ID | Icono |
+|-----------|-----|-------|
+| OpenAI | `openai` | `iconos-proveedor.tsx` → `IconoOpenAI` |
+
+Para agregar un nuevo proveedor:
+1. Añadir entrada en `PROVEEDORES` (modelos.ts)
+2. Añadir modelos en `MODELOS_DISPONIBLES` con el `proveedor` correspondiente
+3. Añadir categorias en `CATEGORIAS_MODELOS` con el `proveedor`
+4. Añadir icono SVG en `iconos-proveedor.tsx` y registrarlo en `MAPA_ICONOS`
+5. Configurar cliente API en `app/api/chat/route.ts`
+
+### Modelos
+
+| Modelo | Proveedor | Categoria | Reasoning | Descripcion |
+|--------|-----------|-----------|-----------|-------------|
+| `gpt-5.2` | OpenAI | gpt-5.2 | Si | El mas reciente y capaz |
+| `gpt-5.1` | OpenAI | gpt-5.1 | Si | Ideal para codigo y razonamiento |
+| `gpt-5` | OpenAI | gpt-5 | Si | Proposito general de la familia GPT-5 |
+| `gpt-5-mini` | OpenAI | gpt-5 | Si | Version rapida de GPT-5 |
+| `gpt-5-nano` | OpenAI | gpt-5 | Si | Ultra-rapido y economico |
+| `gpt-4.1` | OpenAI | gpt-4.1 | No | Versatil y preciso |
+| `gpt-4.1-mini` | OpenAI | gpt-4.1 | No | Compacto y economico |
+| `gpt-4o` | OpenAI | gpt-4o | No | Multimodal de proposito general |
+| `gpt-4o-mini` | OpenAI | gpt-4o | No | Compacto y economico (modelo por defecto) |
 
 ---
 
@@ -398,27 +416,50 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 
 ## Funcionalidades
 
-1. **Chat conversacional** con multiples modelos OpenAI
-2. **Streaming en tiempo real** con throttle de 30ms para rendimiento optimo
-3. **Busqueda web integrada** con indicador visual y fuentes citadas
-4. **Reasoning/Pensamiento** visible con summary en streaming
-5. **Adjuntos multimodales** (imagenes y archivos de texto)
-6. **Edicion de mensajes** del usuario con recorte automatico del historial
-7. **Regeneracion de respuestas** manteniendo contexto
-8. **Reenvio de mensajes** con nueva respuesta
-9. **Gestion de conversaciones** (crear, renombrar, eliminar, creacion lazy al enviar primer mensaje)
-10. **Generacion automatica de titulos** en el primer intercambio
-11. **Edicion de titulo inline** desde el header (izquierda, ancho fijo con scroll interno)
-12. **Markdown completo** con GFM, matematicas KaTeX y highlighting de codigo
-13. **Nombre del modelo** visible junto a los botones de accion del asistente
-14. **Branding PenguinChat** con tipografia serif en la cabecera del sidebar
-15. **Tarjetas de citacion** con preview de YouTube y favicons
-16. **UI/UX moderna** estilo chat premium con tema ocre/beige
-17. **Truncado fiable en sidebar** con cadena defensiva de overflow y workaround para Radix UI ScrollArea issue #926
+1. **Chat conversacional** con multiples modelos y proveedores de IA
+2. **Selector de modelos con panel de proveedores** (Popover): trigger a la derecha, panel con sidebar de iconos de proveedores a la izquierda y modelos agrupados por categoria a la derecha
+3. **Streaming en tiempo real** con throttle de 30ms para rendimiento optimo
+4. **Busqueda web integrada** con indicador visual y fuentes citadas
+5. **Reasoning/Pensamiento** visible con summary en streaming
+6. **Adjuntos multimodales** (imagenes y archivos de texto)
+7. **Edicion de mensajes** del usuario con recorte automatico del historial
+8. **Regeneracion de respuestas** manteniendo contexto
+9. **Reenvio de mensajes** con nueva respuesta
+10. **Gestion de conversaciones** (crear, renombrar, eliminar, creacion lazy al enviar primer mensaje)
+11. **Generacion automatica de titulos** en el primer intercambio
+12. **Titulo flotante editable** sin header fijo, como boton absolute sobre el area de chat
+13. **Markdown completo** con GFM, matematicas KaTeX y highlighting de codigo
+14. **Nombre del modelo** visible junto a los botones de accion del asistente
+15. **Branding PenguinChat** con tipografia serif en la cabecera del sidebar
+16. **Tarjetas de citacion** con preview de YouTube y favicons
+17. **UI/UX moderna** estilo chat premium con tema ocre/beige
+18. **Truncado fiable en sidebar** con cadena defensiva de overflow y workaround para Radix UI ScrollArea issue #926
 
 ---
 
 ## Notas Tecnicas
+
+### Arquitectura Multi-Proveedor
+
+El sistema esta preparado para soportar multiples proveedores de IA. La estructura de datos sigue una jerarquia:
+
+```
+Proveedor (ProveedorIA)
+  └── Categorias (CATEGORIAS_MODELOS, filtradas por proveedor)
+       └── Modelos (ModeloDisponible, con campo `proveedor`)
+```
+
+**Archivos clave:**
+- `lib/tipos.ts`: Interfaces `ProveedorIA` y `ModeloDisponible` (con campo `proveedor: string`)
+- `lib/modelos.ts`: Constantes `PROVEEDORES`, `MODELOS_DISPONIBLES`, `CATEGORIAS_MODELOS`, helpers `obtenerProveedorDeModelo()`
+- `components/ui/iconos-proveedor.tsx`: Iconos SVG por proveedor, extensibles via `MAPA_ICONOS`
+- `components/chat/entrada-mensaje.tsx`: Popover con panel de dos columnas (proveedores + modelos)
+
+**UI del selector:** El trigger muestra solo `Nombre Modelo ▼` (sin icono), posicionado a la derecha del input junto al boton de enviar. Al hacer click se abre un Popover (`align="end"`) con dos paneles:
+- **Panel izquierdo (w-12):** Sidebar vertical con iconos de proveedores (boton por cada proveedor), el activo se resalta con fondo hover
+- **Panel derecho:** Lista de modelos agrupados por categoria del proveedor seleccionado, con check en el modelo activo
+
+El `proveedorActivo` se maneja con estado local dentro de `EntradaMensaje`. Al seleccionar un modelo, el Popover se cierra automaticamente.
 
 ### Workaround Radix UI ScrollArea (issue #926)
 

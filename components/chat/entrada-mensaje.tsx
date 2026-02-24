@@ -4,17 +4,11 @@ import { useState, useRef, useCallback } from "react"
 import { ArrowUp, Paperclip, X, ChevronDown, Check, Square, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn, generarId } from "@/lib/utils"
 import type { Adjunto } from "@/lib/tipos"
-import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS } from "@/lib/modelos"
+import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDORES } from "@/lib/modelos"
+import { IconoProveedor } from "@/components/ui/iconos-proveedor"
 
 // Tipos de archivos aceptados
 const TIPOS_IMAGEN = "image/png,image/jpeg,image/gif,image/webp"
@@ -39,10 +33,17 @@ export function EntradaMensaje({
 }: PropiedadesEntrada) {
   const [texto, establecerTexto] = useState("")
   const [adjuntos, establecerAdjuntos] = useState<Adjunto[]>([])
+  const [selectorAbierto, establecerSelectorAbierto] = useState(false)
+  const [proveedorActivo, establecerProveedorActivo] = useState(PROVEEDORES[0].id)
   const referenciaTextarea = useRef<HTMLTextAreaElement>(null)
   const referenciaInputArchivo = useRef<HTMLInputElement>(null)
 
   const tieneContenido = texto.trim().length > 0 || adjuntos.length > 0
+
+  // Categorias y modelos del proveedor activo
+  const categoriasDelProveedor = CATEGORIAS_MODELOS.filter(
+    (c) => c.proveedor === proveedorActivo
+  )
 
   const manejarEnvio = useCallback(() => {
     if (!tieneContenido || estaDeshabilitado) return
@@ -98,6 +99,11 @@ export function EntradaMensaje({
 
   function eliminarAdjunto(id: string) {
     establecerAdjuntos((previo) => previo.filter((a) => a.id !== id))
+  }
+
+  function seleccionarModeloYCerrar(idModelo: string) {
+    alSeleccionarModelo(idModelo)
+    establecerSelectorAbierto(false)
   }
 
   return (
@@ -160,7 +166,7 @@ export function EntradaMensaje({
           {/* Barra de acciones inferior */}
           <div className="flex items-center justify-between px-3 pb-2 pt-1">
             <div className="flex items-center gap-1">
-              {/* Botón adjuntar archivo */}
+              {/* Boton adjuntar archivo */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -188,54 +194,91 @@ export function EntradaMensaje({
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Selector de modelo */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+              {/* Selector de modelo con panel de proveedores */}
+              <Popover open={selectorAbierto} onOpenChange={establecerSelectorAbierto}>
+                <PopoverTrigger asChild>
                   <Button
                     variant="ghost"
-                    className="h-8 gap-1 px-3 text-xs font-medium text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] rounded-lg transition-colors"
+                    className="h-8 gap-1.5 px-3 text-xs font-medium text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] rounded-lg transition-colors"
                   >
                     {obtenerNombreModelo(modeloSeleccionado)}
                     <ChevronDown className="h-3 w-3 mb-[1px]" />
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
+                </PopoverTrigger>
+                <PopoverContent
                   align="end"
-                  className="w-64 bg-[var(--color-claude-input)] border-[var(--color-claude-input-border)]"
+                  sideOffset={8}
+                  className="w-80 p-0 overflow-hidden"
                 >
-                  {CATEGORIAS_MODELOS.map((categoria, indiceCat) => {
-                    const modelosCategoria = MODELOS_DISPONIBLES.filter(
-                      (m) => m.categoria === categoria.clave
-                    )
-                    if (modelosCategoria.length === 0) return null
-                    return (
-                      <div key={categoria.clave}>
-                        {indiceCat > 0 && <DropdownMenuSeparator className="bg-[var(--color-claude-input-border)]" />}
-                        <DropdownMenuLabel className="text-xs text-[var(--color-claude-texto-secundario)]">
-                          {categoria.etiqueta}
-                        </DropdownMenuLabel>
-                        {modelosCategoria.map((modelo) => (
-                          <DropdownMenuItem
-                            key={modelo.id}
-                            className="flex items-center gap-2 cursor-pointer text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] focus:bg-[var(--color-claude-sidebar-hover)]"
-                            onClick={() => alSeleccionarModelo(modelo.id)}
-                          >
-                            <div className="flex-1">
-                              <div className="text-sm font-medium">{modelo.nombre}</div>
-                              <div className="text-xs text-[var(--color-claude-texto-secundario)]">
-                                {modelo.descripcion}
-                              </div>
-                            </div>
-                            {modeloSeleccionado === modelo.id && (
-                              <Check className="h-4 w-4 text-[var(--color-claude-acento)] shrink-0" />
+                  <div className="flex">
+                    {/* Barra lateral de proveedores */}
+                    <div className="w-12 shrink-0 border-r border-[var(--color-claude-input-border)] bg-[var(--color-claude-sidebar)] flex flex-col items-center py-2 gap-1">
+                      {PROVEEDORES.map((proveedor) => (
+                        <Tooltip key={proveedor.id}>
+                          <TooltipTrigger asChild>
+                            <button
+                              className={cn(
+                                "h-9 w-9 flex items-center justify-center rounded-lg transition-colors cursor-pointer",
+                                proveedorActivo === proveedor.id
+                                  ? "bg-[var(--color-claude-sidebar-hover)] text-[var(--color-claude-texto)]"
+                                  : "text-[var(--color-claude-texto-secundario)] hover:bg-[var(--color-claude-sidebar-hover)] hover:text-[var(--color-claude-texto)]"
+                              )}
+                              onClick={() => establecerProveedorActivo(proveedor.id)}
+                            >
+                              <IconoProveedor idProveedor={proveedor.id} className="h-5 w-5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="right">{proveedor.nombre}</TooltipContent>
+                        </Tooltip>
+                      ))}
+                    </div>
+
+                    {/* Panel de modelos del proveedor activo */}
+                    <div className="flex-1 max-h-[400px] overflow-y-auto py-1">
+                      {categoriasDelProveedor.map((categoria, indiceCat) => {
+                        const modelosCategoria = MODELOS_DISPONIBLES.filter(
+                          (m) => m.categoria === categoria.clave && m.proveedor === proveedorActivo
+                        )
+                        if (modelosCategoria.length === 0) return null
+
+                        return (
+                          <div key={categoria.clave}>
+                            {indiceCat > 0 && (
+                              <div className="mx-3 my-1 h-px bg-[var(--color-claude-input-border)]" />
                             )}
-                          </DropdownMenuItem>
-                        ))}
-                      </div>
-                    )
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
+                            <div className="px-3 py-1.5 text-[11px] font-semibold text-[var(--color-claude-texto-secundario)] uppercase tracking-wide">
+                              {categoria.etiqueta}
+                            </div>
+                            {modelosCategoria.map((modelo) => (
+                              <button
+                                key={modelo.id}
+                                className={cn(
+                                  "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors cursor-pointer",
+                                  "hover:bg-[var(--color-claude-sidebar-hover)]",
+                                  modeloSeleccionado === modelo.id && "bg-[var(--color-claude-sidebar-hover)]"
+                                )}
+                                onClick={() => seleccionarModeloYCerrar(modelo.id)}
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm font-medium text-[var(--color-claude-texto)]">
+                                    {modelo.nombre}
+                                  </div>
+                                  <div className="text-xs text-[var(--color-claude-texto-secundario)] truncate">
+                                    {modelo.descripcion}
+                                  </div>
+                                </div>
+                                {modeloSeleccionado === modelo.id && (
+                                  <Check className="h-4 w-4 text-[var(--color-claude-acento)] shrink-0" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
 
               {/* Boton enviar / detener */}
               {estaEscribiendo && alDetener ? (
@@ -277,7 +320,7 @@ export function EntradaMensaje({
 
         {/* Texto informativo */}
         <p className="mt-2 text-center text-xs text-[var(--color-claude-texto-secundario)]">
-          PenguinChat puede cometer errores. Verifica la información importante.
+          PenguinChat puede cometer errores. Verifica la informacion importante.
         </p>
       </div>
     </div>

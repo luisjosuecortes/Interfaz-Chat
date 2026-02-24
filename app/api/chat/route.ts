@@ -2,6 +2,9 @@ import OpenAI from "openai"
 import { NextResponse } from "next/server"
 import { obtenerModelo } from "@/lib/modelos"
 
+// TODO: Cuando se añadan más proveedores (Anthropic, Google, etc.),
+// usar obtenerProveedorDeModelo() para enrutar al cliente correcto.
+
 // Interfaz para adjuntos que llegan del cliente
 interface AdjuntoEntrada {
   id: string
