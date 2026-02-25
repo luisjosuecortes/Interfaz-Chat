@@ -4,7 +4,7 @@ import { PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { AvatarAsistente } from "@/components/ui/icono-sparkle"
-import type { Adjunto } from "@/lib/tipos"
+import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { EntradaMensaje } from "@/components/chat/entrada-mensaje"
 
 interface PropiedadesPantallaInicio {
@@ -13,6 +13,11 @@ interface PropiedadesPantallaInicio {
   alAlternarBarraLateral: () => void
   alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void
   alSeleccionarModelo: (idModelo: string) => void
+  documentosRAG?: DocumentoRAGUI[]
+  totalFragmentosRAG?: number
+  alProcesarAdjuntoRAG?: (adjunto: Adjunto) => void
+  estaIndexandoRAG?: boolean
+  alEliminarDocumentoRAG?: (adjuntoId: string) => void
 }
 
 export function PantallaInicio({
@@ -21,6 +26,11 @@ export function PantallaInicio({
   alAlternarBarraLateral,
   alEnviar,
   alSeleccionarModelo,
+  documentosRAG,
+  totalFragmentosRAG,
+  alProcesarAdjuntoRAG,
+  estaIndexandoRAG,
+  alEliminarDocumentoRAG,
 }: PropiedadesPantallaInicio) {
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden w-full relative">
@@ -63,6 +73,11 @@ export function PantallaInicio({
               estaDeshabilitado={false}
               modeloSeleccionado={modeloSeleccionado}
               alSeleccionarModelo={alSeleccionarModelo}
+              documentosRAG={documentosRAG}
+              totalFragmentosRAG={totalFragmentosRAG}
+              alProcesarAdjuntoRAG={alProcesarAdjuntoRAG}
+              estaIndexandoRAG={estaIndexandoRAG}
+              alEliminarDocumentoRAG={alEliminarDocumentoRAG}
             />
           </div>
         </div>

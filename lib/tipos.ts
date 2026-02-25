@@ -1,5 +1,61 @@
 // Tipos principales del chat
 
+// === TIPOS RAG ===
+
+/** Estado del procesamiento de un documento RAG */
+export type EstadoProcesamientoRAG =
+  | "pendiente"
+  | "extrayendo"
+  | "fragmentando"
+  | "vectorizando"
+  | "listo"
+  | "error"
+
+/** Un fragmento de documento con su embedding binario */
+export interface FragmentoDocumento {
+  id: string
+  documentoId: string
+  texto: string
+  embedding: Uint8Array
+  indice: number
+  metadatos: {
+    inicio: number
+    fin: number
+  }
+}
+
+/** Documento procesado para RAG */
+export interface DocumentoRAG {
+  id: string
+  nombre: string
+  tipoMime: string
+  estado: EstadoProcesamientoRAG
+  mensajeError?: string
+  fragmentos: FragmentoDocumento[]
+  fechaCreacion: Date
+  fechaProcesamiento?: Date
+}
+
+/** Resultado de busqueda por similitud binaria (Hamming) */
+export interface ResultadoBusqueda {
+  fragmento: FragmentoDocumento
+  similitud: number
+  nombreDocumento: string
+  totalFragmentosDocumento: number
+}
+
+/** Estado de un documento RAG en la UI */
+export interface DocumentoRAGUI {
+  id: string
+  nombre: string
+  estado: EstadoProcesamientoRAG
+  progreso?: number
+  error?: string
+  adjuntoId?: string
+}
+
+// === TIPOS CHAT ===
+
 export interface Adjunto {
   id: string
   tipo: "imagen" | "archivo"

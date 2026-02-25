@@ -5,7 +5,7 @@ import { PanelLeftOpen, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import type { Conversacion, Adjunto } from "@/lib/tipos"
+import type { Conversacion, Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { BurbujaMensaje } from "@/components/chat/burbuja-mensaje"
 import { EntradaMensaje } from "@/components/chat/entrada-mensaje"
 import { AvatarAsistente } from "@/components/ui/icono-sparkle"
@@ -24,6 +24,11 @@ interface PropiedadesAreaChat {
   alReenviarMensaje: (idMensaje: string) => void
   alRegenerarRespuesta: (idMensaje: string) => void
   alRenombrarConversacion: (id: string, titulo: string) => void
+  documentosRAG?: DocumentoRAGUI[]
+  totalFragmentosRAG?: number
+  alProcesarAdjuntoRAG?: (adjunto: Adjunto) => void
+  estaIndexandoRAG?: boolean
+  alEliminarDocumentoRAG?: (adjuntoId: string) => void
 }
 
 export function AreaChat({
@@ -40,6 +45,11 @@ export function AreaChat({
   alReenviarMensaje,
   alRegenerarRespuesta,
   alRenombrarConversacion,
+  documentosRAG,
+  totalFragmentosRAG,
+  alProcesarAdjuntoRAG,
+  estaIndexandoRAG,
+  alEliminarDocumentoRAG,
 }: PropiedadesAreaChat) {
   const referenciaFinal = useRef<HTMLDivElement>(null)
   const referenciaInputTitulo = useRef<HTMLInputElement>(null)
@@ -173,6 +183,11 @@ export function AreaChat({
           alDetener={alDetener}
           modeloSeleccionado={modeloSeleccionado}
           alSeleccionarModelo={alSeleccionarModelo}
+          documentosRAG={documentosRAG}
+          totalFragmentosRAG={totalFragmentosRAG}
+          alProcesarAdjuntoRAG={alProcesarAdjuntoRAG}
+          estaIndexandoRAG={estaIndexandoRAG}
+          alEliminarDocumentoRAG={alEliminarDocumentoRAG}
         />
       </div>
     </div>

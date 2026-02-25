@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn, generarId } from "@/lib/utils"
-import type { Adjunto } from "@/lib/tipos"
+import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDORES, obtenerProveedorDeModelo } from "@/lib/modelos"
 import { IconoProveedor } from "@/components/ui/iconos-proveedor"
+import { IndicadorRAG } from "@/components/chat/indicador-rag"
 
 // Tipos de archivos aceptados
 const TIPOS_IMAGEN = "image/png,image/jpeg,image/gif,image/webp"
@@ -21,6 +22,11 @@ interface PropiedadesEntrada {
   alDetener?: () => void
   modeloSeleccionado: string
   alSeleccionarModelo: (idModelo: string) => void
+  documentosRAG?: DocumentoRAGUI[]
+  totalFragmentosRAG?: number
+  alProcesarAdjuntoRAG?: (adjunto: Adjunto) => void
+  estaIndexandoRAG?: boolean
+  alEliminarDocumentoRAG?: (adjuntoId: string) => void
 }
 
 export function EntradaMensaje({
@@ -30,6 +36,11 @@ export function EntradaMensaje({
   alDetener,
   modeloSeleccionado,
   alSeleccionarModelo,
+  documentosRAG,
+  totalFragmentosRAG,
+  alProcesarAdjuntoRAG,
+  estaIndexandoRAG,
+  alEliminarDocumentoRAG,
 }: PropiedadesEntrada) {
   const [texto, establecerTexto] = useState("")
   const [adjuntos, establecerAdjuntos] = useState<Adjunto[]>([])
@@ -45,15 +56,17 @@ export function EntradaMensaje({
     (c) => c.proveedor === proveedorActivo
   )
 
+  const puedeEnviar = tieneContenido && !estaDeshabilitado && !estaIndexandoRAG
+
   const manejarEnvio = useCallback(() => {
-    if (!tieneContenido || estaDeshabilitado) return
+    if (!puedeEnviar) return
     alEnviar(texto.trim(), adjuntos.length > 0 ? adjuntos : undefined)
     establecerTexto("")
     establecerAdjuntos([])
     if (referenciaTextarea.current) {
       referenciaTextarea.current.style.height = "auto"
     }
-  }, [texto, adjuntos, tieneContenido, estaDeshabilitado, alEnviar])
+  }, [texto, adjuntos, puedeEnviar, alEnviar])
 
   function manejarTecla(evento: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (evento.key === "Enter" && !evento.shiftKey) {
@@ -89,6 +102,11 @@ export function EntradaMensaje({
           tipoMime: archivo.type,
         }
         establecerAdjuntos((previo) => [...previo, nuevoAdjunto])
+
+        // Iniciar indexacion RAG inmediatamente para archivos de documento
+        if (alProcesarAdjuntoRAG) {
+          alProcesarAdjuntoRAG(nuevoAdjunto)
+        }
       }
       lector.readAsDataURL(archivo)
     })
@@ -99,6 +117,7 @@ export function EntradaMensaje({
 
   function eliminarAdjunto(id: string) {
     establecerAdjuntos((previo) => previo.filter((a) => a.id !== id))
+    alEliminarDocumentoRAG?.(id)
   }
 
   function seleccionarModeloYCerrar(idModelo: string) {
@@ -144,6 +163,14 @@ export function EntradaMensaje({
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Indicador de documentos RAG */}
+          {documentosRAG && documentosRAG.length > 0 && (
+            <IndicadorRAG
+              documentos={documentosRAG}
+              totalFragmentos={totalFragmentosRAG ?? 0}
+            />
           )}
 
           {/* Textarea */}
@@ -311,17 +338,19 @@ export function EntradaMensaje({
                       size="icon"
                       className={cn(
                         "h-8 w-8 shrink-0 rounded-full transition-colors",
-                        tieneContenido && !estaDeshabilitado
+                        puedeEnviar
                           ? "bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white"
                           : "bg-[var(--color-claude-input-border)] text-[var(--color-claude-texto-secundario)] cursor-not-allowed"
                       )}
-                      disabled={!tieneContenido || estaDeshabilitado}
+                      disabled={!puedeEnviar}
                       onClick={manejarEnvio}
                     >
                       <ArrowUp className="h-4 w-4" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Enviar mensaje</TooltipContent>
+                  <TooltipContent>
+                    {estaIndexandoRAG ? "Indexando documentos..." : "Enviar mensaje"}
+                  </TooltipContent>
                 </Tooltip>
               )}
             </div>
