@@ -2,6 +2,7 @@
 // Pipeline: archivo → Worker (extraccion + fragmentacion + vectorizacion) → almacenamiento
 // Busqueda: consulta → embedding binario → similitud Hamming → contexto para el LLM
 // El Worker procesa todo: React solo recibe progreso y resultados
+// Soporta ~60 extensiones de codigo con fragmentacion inteligente por lenguaje
 
 import type { Adjunto, DocumentoRAG, FragmentoDocumento, ResultadoBusqueda } from "@/lib/tipos"
 import { generarId } from "@/lib/utils"
@@ -13,11 +14,7 @@ import {
   tieneFragmentosListos,
   esperarHidratacion,
 } from "./almacen-vectores"
-
-// Extensiones soportadas para procesamiento RAG
-const EXTENSIONES_RAG = new Set([
-  ".txt", ".md", ".csv", ".json", ".xml", ".html", ".css", ".js", ".ts", ".py", ".pdf",
-])
+import { esArchivoSoportado, esArchivoProhibido } from "./separadores-codigo"
 
 // Callback de progreso de procesamiento
 export type CallbackProgreso = (
@@ -27,11 +24,12 @@ export type CallbackProgreso = (
   error?: string
 ) => void
 
-/** Determina si un adjunto debe procesarse con RAG (no imagenes) */
+/** Determina si un adjunto debe procesarse con RAG (no imagenes, no archivos prohibidos).
+ *  Usa el registro centralizado de extensiones soportadas y lista negra. */
 export function debeUsarRAG(adjunto: Adjunto): boolean {
   if (adjunto.tipo === "imagen") return false
-  const extension = adjunto.nombre.toLowerCase().slice(adjunto.nombre.lastIndexOf("."))
-  return EXTENSIONES_RAG.has(extension)
+  if (esArchivoProhibido(adjunto.nombre)) return false
+  return esArchivoSoportado(adjunto.nombre)
 }
 
 /** Procesa un documento completo para RAG
@@ -101,11 +99,13 @@ export async function procesarDocumentoParaRAG(
   }
 }
 
-/** Busca contexto relevante para una consulta en los documentos de la conversacion */
+/** Busca contexto relevante para una consulta en los documentos de la conversacion.
+ *  idsDocumentosRecientes: IDs de documentos adjuntados en el mensaje actual para boost */
 export async function buscarContextoRelevante(
   conversacionId: string,
   consulta: string,
-  topK: number = 10
+  topK: number = 10,
+  idsDocumentosRecientes?: Set<string>
 ): Promise<ResultadoBusqueda[]> {
   // Esperar hidratacion de IndexedDB (no-op si ya completo)
   await esperarHidratacion()
@@ -113,7 +113,7 @@ export async function buscarContextoRelevante(
   if (!tieneFragmentosListos(conversacionId)) return []
 
   const embeddingConsulta = await generarEmbedding(consulta)
-  return buscarFragmentosSimilares(conversacionId, embeddingConsulta, topK)
+  return buscarFragmentosSimilares(conversacionId, embeddingConsulta, topK, idsDocumentosRecientes)
 }
 
 /** Grupo de fragmentos adyacentes fusionados del mismo documento */

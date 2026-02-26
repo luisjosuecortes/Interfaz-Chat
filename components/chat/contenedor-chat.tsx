@@ -170,13 +170,15 @@ export function ContenedorChat() {
   }, [conversacionActiva, documentosRAG])
 
   // Obtener contexto RAG para una consulta y retornar contenido aumentado
+  // idsDocumentosRecientes: IDs de documentos adjuntados en el mensaje actual (boost de priorizacion)
   async function obtenerContenidoConContextoRAG(
     idConversacion: string,
-    contenidoOriginal: string
+    contenidoOriginal: string,
+    idsDocumentosRecientes?: Set<string>
   ): Promise<string> {
     if (!tieneFragmentosListos(idConversacion)) return contenidoOriginal
 
-    const resultados = await buscarContextoRelevante(idConversacion, contenidoOriginal)
+    const resultados = await buscarContextoRelevante(idConversacion, contenidoOriginal, 10, idsDocumentosRecientes)
     if (resultados.length === 0) return contenidoOriginal
 
     const contexto = construirContextoParaPrompt(resultados)
@@ -328,8 +330,19 @@ export function ContenedorChat() {
     // Agregar mensaje del usuario al store (con adjuntos originales para mostrar en UI)
     agregarMensaje(idConversacion, { rol: "usuario", contenido, adjuntos })
 
+    // Recoger IDs de documentos RAG adjuntados en este mensaje (para boost de priorizacion)
+    let idsDocumentosRecientes: Set<string> | undefined
+    if (adjuntos && adjuntos.length > 0) {
+      const idsRecientes = documentosRAG
+        .filter((d) => d.adjuntoId && adjuntos.some((a) => a.id === d.adjuntoId) && d.estado === "listo")
+        .map((d) => d.id)
+      if (idsRecientes.length > 0) {
+        idsDocumentosRecientes = new Set(idsRecientes)
+      }
+    }
+
     // Obtener contenido aumentado con contexto RAG si hay documentos indexados
-    const contenidoConContexto = await obtenerContenidoConContextoRAG(idConversacion, contenido)
+    const contenidoConContexto = await obtenerContenidoConContextoRAG(idConversacion, contenido, idsDocumentosRecientes)
 
     const historialMensajes = [
       ...mensajesPrevios.map((m) => ({

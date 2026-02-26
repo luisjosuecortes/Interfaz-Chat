@@ -4,6 +4,9 @@
 // Soporta WebGPU (GPU ~10x) con fallback a WASM (CPU)
 // Pipeline de embeddings: ONNX(384) → Matryoshka(256) → Binario(32 bytes)
 // Transferable Objects para cero copias en la transferencia
+// Fragmentacion inteligente: separadores por lenguaje (patron LangChain) con fallback a genericos
+
+import { obtenerSeparadores } from "./separadores-codigo"
 
 const MODELO = "mixedbread-ai/mxbai-embed-xsmall-v1"
 const LIMITE_CHARS = 16000
@@ -209,6 +212,101 @@ async function* extraerPaginasPDF(
   }
 }
 
+// === PARSING DE JUPYTER NOTEBOOKS (.ipynb) ===
+
+const LIMITE_SALIDA_NOTEBOOK = 500
+
+/** Parsea un Jupyter Notebook JSON y retorna texto semantico de sus celdas */
+function parsearNotebook(textoJSON: string): string {
+  let notebook: {
+    cells?: Array<{
+      cell_type?: string
+      source?: string | string[]
+      outputs?: Array<Record<string, unknown>>
+    }>
+    metadata?: {
+      kernelspec?: { language?: string }
+    }
+  }
+
+  try {
+    notebook = JSON.parse(textoJSON)
+  } catch {
+    return textoJSON // Si falla el parsing, usar el JSON crudo como texto
+  }
+
+  if (!notebook.cells || !Array.isArray(notebook.cells)) return textoJSON
+
+  const lenguaje = notebook.metadata?.kernelspec?.language || "python"
+  const celdas: string[] = []
+
+  for (const celda of notebook.cells) {
+    const fuente = Array.isArray(celda.source) ? celda.source.join("") : celda.source || ""
+    if (!fuente.trim()) continue
+
+    switch (celda.cell_type) {
+      case "markdown":
+        celdas.push(fuente)
+        break
+
+      case "code": {
+        let textoCelda = "```" + lenguaje + "\n" + fuente + "\n```"
+        if (celda.outputs && celda.outputs.length > 0) {
+          const salidas = extraerSalidasCeldaWorker(celda.outputs)
+          if (salidas) textoCelda += "\n\nOutput:\n" + salidas
+        }
+        celdas.push(textoCelda)
+        break
+      }
+
+      case "raw":
+        celdas.push(fuente)
+        break
+    }
+  }
+
+  return celdas.join("\n\n---\n\n")
+}
+
+/** Extrae texto de las salidas de una celda de codigo (version Worker) */
+function extraerSalidasCeldaWorker(outputs: Array<Record<string, unknown>>): string {
+  const textos: string[] = []
+
+  for (const salida of outputs) {
+    const tipo = salida.output_type as string
+
+    if (tipo === "stream") {
+      const texto = Array.isArray(salida.text) ? (salida.text as string[]).join("") : (salida.text as string) || ""
+      const limpio = texto.trim()
+      if (limpio) {
+        textos.push(limpio.length > LIMITE_SALIDA_NOTEBOOK
+          ? limpio.slice(0, LIMITE_SALIDA_NOTEBOOK) + "\n[... output truncated]"
+          : limpio)
+      }
+    } else if (tipo === "execute_result" || tipo === "display_data") {
+      const data = salida.data as Record<string, unknown> | undefined
+      if (data) {
+        const textoPlano = data["text/plain"]
+        if (textoPlano) {
+          const t = Array.isArray(textoPlano) ? (textoPlano as string[]).join("") : textoPlano as string
+          const limpio = t.trim()
+          if (limpio) {
+            textos.push(limpio.length > LIMITE_SALIDA_NOTEBOOK
+              ? limpio.slice(0, LIMITE_SALIDA_NOTEBOOK) + "\n[... output truncated]"
+              : limpio)
+          }
+        }
+      }
+    } else if (tipo === "error") {
+      const nombre = salida.ename as string | undefined
+      const valor = salida.evalue as string | undefined
+      if (nombre && valor) textos.push(`${nombre}: ${valor}`)
+    }
+  }
+
+  return textos.join("\n")
+}
+
 /** Extrae texto de un archivo como stream de paginas/secciones */
 async function* extraerPaginas(
   idMensaje: number,
@@ -220,6 +318,11 @@ async function* extraerPaginas(
 ): AsyncGenerator<string> {
   if (docPDF) {
     yield* extraerPaginasPDF(idMensaje, docPDF, esGrande)
+  } else if (nombre.toLowerCase().endsWith(".ipynb")) {
+    // Jupyter Notebook: parsear JSON y extraer celdas semanticamente
+    const textoJSON = new TextDecoder("utf-8").decode(archivo)
+    const textoParseado = parsearNotebook(textoJSON)
+    yield limpiarTexto(textoParseado)
   } else {
     // Texto plano: decodificar y yield completo
     const texto = new TextDecoder("utf-8").decode(archivo)
@@ -229,27 +332,40 @@ async function* extraerPaginas(
 
 // === FRAGMENTACION STREAMING: async generator que yield chunks ===
 
-/** Busca un punto natural para cortar el texto */
-function encontrarPuntoCorte(texto: string, tamano: number): number {
+/** Busca un punto natural para cortar el texto.
+ *  Si se pasan separadores de lenguaje, intenta cortar en limites semanticos del codigo
+ *  (funciones, clases, exports) con un umbral agresivo de 0.3 para mantener bloques completos.
+ *  Fallback a separadores genericos: parrafo > oracion > linea > espacio */
+function encontrarPuntoCorte(texto: string, tamano: number, separadoresLenguaje?: string[] | null): number {
   if (texto.length <= tamano) return texto.length
 
   const ventana = texto.slice(0, tamano + 100)
 
-  // 1. Fin de parrafo
+  // 1. Separadores de lenguaje (umbral agresivo 0.3 — prioriza mantener funciones completas)
+  if (separadoresLenguaje) {
+    for (const sep of separadoresLenguaje) {
+      // Buscar el ultimo separador antes del tamano objetivo
+      const pos = ventana.lastIndexOf(sep, tamano)
+      // Umbral 0.3: si hay un separador despues del 30% del fragmento, cortar ahi
+      if (pos > tamano * 0.3) return pos
+    }
+  }
+
+  // 2. Fin de parrafo
   const posParrafo = ventana.lastIndexOf("\n\n", tamano)
   if (posParrafo > tamano * 0.7) return posParrafo + 2
 
-  // 2. Fin de oracion
+  // 3. Fin de oracion
   for (const marca of [". ", "! ", "? ", ".\n", "!\n", "?\n"]) {
     const pos = ventana.lastIndexOf(marca, tamano)
     if (pos > tamano * 0.7) return pos + marca.length
   }
 
-  // 3. Salto de linea
+  // 4. Salto de linea
   const posLinea = ventana.lastIndexOf("\n", tamano)
   if (posLinea > tamano * 0.8) return posLinea + 1
 
-  // 4. Espacio
+  // 5. Espacio
   const posEspacio = ventana.lastIndexOf(" ", tamano)
   if (posEspacio > tamano * 0.9) return posEspacio + 1
 
@@ -263,11 +379,13 @@ interface FragmentoStream {
   fin: number
 }
 
-/** Fragmenta un stream de paginas en chunks con solapamiento (yield por chunk) */
+/** Fragmenta un stream de paginas en chunks con solapamiento (yield por chunk).
+ *  Usa separadores de lenguaje cuando estan disponibles para respetar limites semanticos del codigo */
 async function* fragmentarStream(
   paginas: AsyncGenerator<string>,
   tamanoFragmento: number,
-  solapamiento: number
+  solapamiento: number,
+  separadoresLenguaje?: string[] | null
 ): AsyncGenerator<FragmentoStream> {
   let buffer = ""
   let posicionGlobal = 0
@@ -277,7 +395,7 @@ async function* fragmentarStream(
     buffer += pagina
 
     while (buffer.length >= tamanoFragmento) {
-      const punto = encontrarPuntoCorte(buffer, tamanoFragmento)
+      const punto = encontrarPuntoCorte(buffer, tamanoFragmento, separadoresLenguaje)
       const texto = buffer.slice(0, punto).trim()
 
       if (texto.length > 0) {
@@ -346,6 +464,9 @@ async function procesarArchivo(id: number, archivo: ArrayBuffer, nombre: string,
   const solapamiento = esGrande ? SOLAPAMIENTO_GRANDE : SOLAPAMIENTO_NORMAL
   const esPDF = tipoMime === "application/pdf" || nombre.toLowerCase().endsWith(".pdf")
 
+  // Detectar separadores de lenguaje por extension del archivo
+  const separadoresLenguaje = obtenerSeparadores(nombre)
+
   // Abrir PDF temprano para obtener numPages y estimar fragmentos
   let docPDF: DocPDF | undefined
   let fragmentosEstimados: number
@@ -372,7 +493,7 @@ async function procesarArchivo(id: number, archivo: ArrayBuffer, nombre: string,
   // Pipeline streaming con async generators:
   // extraerPaginas yield→ fragmentarStream yield→ acumular en batch → vectorizar
   const paginas = extraerPaginas(id, archivo, tipoMime, nombre, esGrande, docPDF)
-  const fragmentos = fragmentarStream(paginas, tamanoFragmento, solapamiento)
+  const fragmentos = fragmentarStream(paginas, tamanoFragmento, solapamiento, separadoresLenguaje)
 
   let batch: FragmentoStream[] = []
   let totalProcesados = 0

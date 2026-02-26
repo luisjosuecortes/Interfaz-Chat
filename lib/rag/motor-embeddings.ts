@@ -434,8 +434,12 @@ async function procesarArchivoEnHiloPrincipal(
 
   // Fase 2: Fragmentar (import dinamico)
   alProgreso?.({ fase: "fragmentando", porcentaje: esPDF ? 30 : 5 })
-  const { fragmentarTexto } = await import("./fragmentador-texto")
-  const fragmentos = fragmentarTexto(resultado.texto)
+  const { fragmentarTexto, fragmentarCodigo } = await import("./fragmentador-texto")
+
+  // Usar fragmentacion inteligente por lenguaje para archivos de codigo
+  const fragmentos = esPDF
+    ? fragmentarTexto(resultado.texto)
+    : fragmentarCodigo(resultado.texto, nombre)
 
   if (fragmentos.length === 0) throw new Error("El documento no contiene texto procesable")
 

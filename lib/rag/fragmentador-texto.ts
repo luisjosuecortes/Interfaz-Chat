@@ -1,5 +1,8 @@
 // Fragmentador de texto para RAG
 // Divide texto largo en fragmentos con solapamiento para indexacion
+// Soporta fragmentacion generica (texto/PDF) y fragmentacion inteligente por lenguaje (codigo)
+
+import { obtenerSeparadores } from "./separadores-codigo"
 
 interface OpcionesFragmentacion {
   tamanoFragmento?: number
@@ -19,6 +22,28 @@ const SOLAPAMIENTO_DEFAULT = 200
 /** Fragmenta texto en chunks con solapamiento respetando limites naturales */
 export function fragmentarTexto(
   texto: string,
+  opciones: OpcionesFragmentacion = {}
+): Fragmento[] {
+  return fragmentarConSeparadores(texto, null, opciones)
+}
+
+/** Fragmenta codigo fuente usando separadores especificos del lenguaje.
+ *  Detecta el lenguaje por la extension del archivo y usa separadores jerarquicos
+ *  (patron LangChain) para cortar en limites semanticos: funciones, clases, exports.
+ *  Si no hay separadores para la extension, cae al fragmentador generico. */
+export function fragmentarCodigo(
+  texto: string,
+  nombreArchivo: string,
+  opciones: OpcionesFragmentacion = {}
+): Fragmento[] {
+  const separadores = obtenerSeparadores(nombreArchivo)
+  return fragmentarConSeparadores(texto, separadores, opciones)
+}
+
+/** Fragmenta texto con separadores opcionales de lenguaje */
+function fragmentarConSeparadores(
+  texto: string,
+  separadoresLenguaje: string[] | null,
   opciones: OpcionesFragmentacion = {}
 ): Fragmento[] {
   const tamanoFragmento = opciones.tamanoFragmento ?? TAMANO_FRAGMENTO_DEFAULT
@@ -41,7 +66,7 @@ export function fragmentarTexto(
 
     // Si no es el final del texto, buscar un punto de corte natural
     if (fin < textoLimpio.length) {
-      fin = buscarPuntoDeCorte(textoLimpio, posicion, fin)
+      fin = buscarPuntoDeCorte(textoLimpio, posicion, fin, separadoresLenguaje)
     }
 
     fin = Math.min(fin, textoLimpio.length)
@@ -76,12 +101,28 @@ function limpiarTexto(texto: string): string {
     .trim()
 }
 
-/** Busca un punto natural para cortar el texto (parrafo, oracion, espacio) */
-function buscarPuntoDeCorte(texto: string, inicio: number, finIdeal: number): number {
+/** Busca un punto natural para cortar el texto.
+ *  Si se pasan separadores de lenguaje, intenta cortar en limites semanticos del codigo
+ *  (funciones, clases, exports) con un umbral agresivo de 0.3 para mantener bloques completos.
+ *  Fallback a separadores genericos: parrafo > oracion > linea > espacio */
+function buscarPuntoDeCorte(
+  texto: string,
+  inicio: number,
+  finIdeal: number,
+  separadoresLenguaje?: string[] | null
+): number {
   const posRelativa = finIdeal - inicio
 
   // Buscar en una ventana alrededor del punto ideal
   const ventana = texto.slice(inicio, finIdeal + 100)
+
+  // Prioridad 0: Separadores de lenguaje (umbral agresivo 0.3)
+  if (separadoresLenguaje) {
+    for (const sep of separadoresLenguaje) {
+      const pos = ventana.lastIndexOf(sep, posRelativa)
+      if (pos > posRelativa * 0.3) return inicio + pos
+    }
+  }
 
   // Prioridad 1: Fin de parrafo (doble salto de linea)
   const posParrafo = ventana.lastIndexOf("\n\n", posRelativa)

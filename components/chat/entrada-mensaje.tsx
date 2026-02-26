@@ -9,11 +9,12 @@ import { cn, generarId } from "@/lib/utils"
 import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDORES, obtenerProveedorDeModelo } from "@/lib/modelos"
 import { IconoProveedor } from "@/components/ui/iconos-proveedor"
+import { generarAceptarExtensiones } from "@/lib/rag/separadores-codigo"
 import { IndicadorRAG } from "@/components/chat/indicador-rag"
 
 // Tipos de archivos aceptados
 const TIPOS_IMAGEN = "image/png,image/jpeg,image/gif,image/webp"
-const TIPOS_ARCHIVO = ".txt,.md,.csv,.json,.xml,.html,.css,.js,.ts,.py,.pdf"
+const TIPOS_ARCHIVO = generarAceptarExtensiones()
 
 interface PropiedadesEntrada {
   alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void

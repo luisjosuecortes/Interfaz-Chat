@@ -49,9 +49,10 @@ chatslm/
 ├── lib/                          # Logica de negocio y utilidades
 │   ├── rag/                      # Sistema RAG (Retrieval-Augmented Generation)
 │   │   ├── almacen-vectores.ts   # Almacen de vectores binarios + IndexedDB persistente
-│   │   ├── extractor-texto.ts   # Extractor de texto (fallback hilo principal)
-│   │   ├── fragmentador-texto.ts # Fragmentador de texto (fallback hilo principal)
+│   │   ├── extractor-texto.ts    # Extractor de texto (fallback hilo principal)
+│   │   ├── fragmentador-texto.ts # Fragmentador de texto con soporte de codigo (fallback hilo principal)
 │   │   ├── motor-embeddings.ts   # Proxy hacia Web Worker con fallback a hilo principal
+│   │   ├── separadores-codigo.ts # Registro centralizado de extensiones, separadores por lenguaje y lista negra
 │   │   ├── worker-embeddings.ts  # Web Worker: pipeline streaming con async generators
 │   │   └── procesador-rag.ts     # Orquestador RAG (delega al motor)
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
@@ -474,7 +475,7 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 4. **Busqueda web integrada** con indicador visual y fuentes citadas
 5. **Reasoning/Pensamiento** visible con summary en streaming
 6. **Adjuntos multimodales** (imagenes y archivos de texto)
-7. **RAG local en el navegador**: procesamiento de documentos (PDF, TXT, etc.) con pipeline streaming completo en Web Worker (async generators), embeddings binarios via WebGPU/WASM, pipeline Matryoshka (384→256 dims) → cuantizacion binaria (256 bits → 32 bytes), auto-tuning de batch size (WebGPU: 128, WASM: 32), heuristicas para archivos grandes (chunks elasticos, filtrado de paginas ruido), busqueda por distancia de Hamming, persistencia en IndexedDB e inyeccion de contexto relevante al LLM
+7. **RAG local en el navegador**: procesamiento de documentos (PDF, codigo fuente en ~60 extensiones, Jupyter Notebooks, TXT, etc.) con pipeline streaming completo en Web Worker (async generators), embeddings binarios via WebGPU/WASM, pipeline Matryoshka (384→256 dims) → cuantizacion binaria (256 bits → 32 bytes), auto-tuning de batch size (WebGPU: 128, WASM: 32), heuristicas para archivos grandes (chunks elasticos, filtrado de paginas ruido), fragmentacion inteligente por lenguaje (separadores jerarquicos tipo LangChain: funciones, clases, bloques con fallback a parrafos/oraciones), busqueda por distancia de Hamming con priorizacion de documentos recientes, persistencia en IndexedDB e inyeccion de contexto relevante al LLM
 8. **Indexacion inmediata al adjuntar**: los documentos se procesan al adjuntarlos, no al enviar el mensaje, con indicador visual de progreso
 9. **Bloqueo de envio durante indexacion**: el boton de enviar se deshabilita mientras hay documentos RAG en proceso
 10. **Truncamiento inteligente del historial**: recorte automatico de mensajes antiguos cuando la conversacion excede ~150K caracteres, conservando al menos los ultimos 4 mensajes
@@ -491,6 +492,8 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 21. **Tarjetas de citacion** con preview de YouTube y favicons
 22. **UI/UX moderna** estilo chat premium con tema ocre/beige
 23. **Truncado fiable en sidebar** con cadena defensiva de overflow y workaround para Radix UI ScrollArea issue #926
+24. **Priorizacion de documentos recientes en RAG**: cuando el usuario adjunta un documento con su mensaje, los fragmentos de ese documento reciben un boost aditivo (+0.10) en la busqueda semantica, priorizandolos sobre documentos previamente indexados
+25. **Soporte de Jupyter Notebooks (.ipynb)**: parsing semantico de celdas (markdown, codigo con salidas, raw) con separadores inteligentes que combinan headings de markdown y bloques de Python
 
 ---
 
@@ -538,7 +541,7 @@ Radix UI inyecta un `<div>` interno en el `ScrollArea.Viewport` con `display: ta
 
 ### Que es RAG
 
-RAG es una tecnica para dar a un LLM informacion que no tiene en su entrenamiento. Se usa cuando el usuario sube archivos grandes (PDFs, documentos de texto) que no caben o no es eficiente enviar completos al modelo. En vez de enviar todo el documento, RAG extrae solo los fragmentos relevantes a la pregunta del usuario.
+RAG es una tecnica para dar a un LLM informacion que no tiene en su entrenamiento. Se usa cuando el usuario sube archivos grandes (PDFs, codigo fuente, documentos de texto) que no caben o no es eficiente enviar completos al modelo. En vez de enviar todo el documento, RAG extrae solo los fragmentos relevantes a la pregunta del usuario.
 
 **RAG es para documentos, no para la conversacion.** La conversacion ya se envia completa al LLM como historial. RAG resuelve el problema de archivos grandes.
 
@@ -631,7 +634,7 @@ Transferable Objects → hilo principal (zero-copy)
 
 **Pipeline streaming con async generators:**
 - `extraerPaginas()`: `async function*` que yield paginas. Para PDFs, extrae en lotes paralelos de 4 paginas concurrentemente usando `Promise.all` (pdfjs usa su propio sub-Worker, permitiendo paralelismo real). Para texto plano, yield el contenido completo
-- `fragmentarStream()`: `async function*` que consume el stream de paginas y yield chunks con solapamiento. Acumula texto en buffer, corta en puntos naturales (parrafo > oracion > linea > espacio), y deja solapamiento para no perder contexto
+- `fragmentarStream()`: `async function*` que consume el stream de paginas y yield chunks con solapamiento. Acumula texto en buffer. Para archivos de codigo, usa separadores jerarquicos por lenguaje (patron LangChain: funciones, clases, exports como puntos de corte prioritarios con umbral agresivo de 0.3). Para texto generico, corta en puntos naturales (parrafo > oracion > linea > espacio). Deja solapamiento para no perder contexto
 - La vectorizacion consume chunks del stream y los acumula en batches. Cuando el batch se llena, vectoriza y envia resultados al hilo principal. Drena fragmentos restantes al final del documento
 
 **Auto-tuning de batch size:**
@@ -709,11 +712,12 @@ Almacen en memoria indexado por conversacion con persistencia en IndexedDB. Cada
 - Solo se persisten documentos con estado `"listo"` (los que tienen embeddings completos)
 - `esperarHidratacion()`: funcion exportada que retorna una promesa. Se usa en `buscarContextoRelevante()` para esperar que IDB termine de cargar antes de buscar
 
-**Busqueda con umbral de similitud:**
+**Busqueda con umbral de similitud y priorizacion:**
 - Retorna los top-10 fragmentos mas similares (maximo)
 - Aplica umbral de similitud minima (`0.55`) para filtrar ruido
 - Resultados por debajo del umbral se descartan antes de seleccionar top-K
 - Incluye `totalFragmentosDocumento` en cada resultado para dar contexto posicional
+- **Boost de recencia:** acepta un `Set<string>` opcional de IDs de documentos recien adjuntados. Los fragmentos de esos documentos reciben un boost aditivo de `0.10` en su puntuacion de similitud, asegurando que documentos adjuntados con el mensaje actual se prioricen en los resultados
 
 **Similitud binaria por distancia de Hamming:**
 - Los embeddings son `Uint8Array[32]` (256 bits cuantizados)
@@ -726,8 +730,11 @@ Almacen en memoria indexado por conversacion con persistencia en IndexedDB. Cada
 Extractor de texto para el pipeline fallback en hilo principal. Se carga via `await import("./extractor-texto")` solo cuando el Web Worker no esta disponible.
 
 **Soporta:**
-- **Texto plano** (.txt, .md, .csv, .json, .xml, .html, .css, .js, .ts, .py): decodifica base64 a UTF-8
+- **Texto plano y codigo fuente** (~60 extensiones: `.ts`, `.tsx`, `.js`, `.py`, `.go`, `.rs`, `.java`, `.cpp`, `.rb`, `.php`, `.css`, `.html`, `.yaml`, `.sql`, `.graphql`, `.prisma`, y muchas mas): decodifica base64 a UTF-8. Usa el registro centralizado de `separadores-codigo.ts` para determinar compatibilidad
+- **Archivos sin extension** conocidos: `Dockerfile`, `Makefile`, `Jenkinsfile`, etc.
+- **Jupyter Notebooks** (`.ipynb`): parsea el JSON del notebook, extrae texto de celdas markdown (tal cual), celdas de codigo (envueltas en code fences con lenguaje del kernel) con sus salidas de texto (stdout, text/plain), y celdas raw. Separa celdas con `---`. Trunca salidas largas a 500 chars. Ignora salidas binarias (imagenes)
 - **PDF** (via pdfjs-dist): extrae texto pagina por pagina reconstruyendo saltos de linea por posicion Y
+- **Lista negra**: Rechaza archivos minificados (`.min.js`, `.min.css`), lockfiles (`package-lock.json`, `yarn.lock`), binarios (`.exe`, `.dll`, `.wasm`), multimedia y comprimidos
 
 **Funcion principal:** `extraerTextoDeArchivo(contenidoBase64, tipoMime, nombre)` → `ResultadoExtraccion`
 
@@ -735,10 +742,57 @@ Extractor de texto para el pipeline fallback en hilo principal. Se carga via `aw
 
 Fragmentador de texto con solapamiento para el pipeline fallback. Se carga via `await import("./fragmentador-texto")` solo cuando el Web Worker no esta disponible.
 
-**Funcion principal:** `fragmentarTexto(texto, opciones?)` → `Fragmento[]`
+**Funciones principales:**
+- `fragmentarTexto(texto, opciones?)` → `Fragmento[]`: Fragmentacion generica para PDFs y texto plano
+- `fragmentarCodigo(texto, nombreArchivo, opciones?)` → `Fragmento[]`: Fragmentacion inteligente por lenguaje. Detecta la extension del archivo y usa separadores jerarquicos del lenguaje (funciones, clases, exports) antes de caer a separadores genericos
+
+**Algoritmo:**
 - Fragmentos de 2000 chars con 200 de solapamiento (por defecto)
+- Para codigo: primero intenta separadores de lenguaje (umbral 0.3), luego genéricos
 - Puntos de corte naturales: parrafo > oracion > linea > espacio
 - Limpieza de texto (saltos excesivos, espacios redundantes)
+
+#### `separadores-codigo.ts` - Registro Centralizado de Extensiones
+
+Modulo centralizado que define todas las extensiones soportadas, separadores por lenguaje y lista negra. Usado por: `worker-embeddings`, `fragmentador-texto`, `extractor-texto`, `procesador-rag`, `entrada-mensaje`.
+
+**Extensiones soportadas (~60) agrupadas por familia:**
+
+| Familia | Extensiones |
+|---------|------------|
+| Web/Frontend | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.vue`, `.svelte`, `.astro`, `.css`, `.scss`, `.sass`, `.less`, `.html`, `.htm`, `.svg` |
+| Backend/Sistemas | `.c`, `.cpp`, `.h`, `.hpp`, `.cc`, `.java`, `.cs`, `.go`, `.rs`, `.swift`, `.kt`, `.php`, `.rb`, `.dart` |
+| Scripts/Datos | `.py`, `.pyw`, `.sh`, `.bash`, `.zsh`, `.bat`, `.ps1`, `.r`, `.csv`, `.tsv`, `.ipynb` |
+| Configuracion | `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.env`, `.ini`, `.cfg`, `.conf`, `.gitignore`, `.dockerignore`, `.editorconfig` |
+| Documentacion | `.md`, `.mdx`, `.txt`, `.rst`, `.tex`, `.log` |
+| DB/Consultas | `.sql`, `.graphql`, `.gql`, `.prisma` |
+| Otros | `.pdf` (procesado con pdfjs-dist) |
+
+**Archivos sin extension conocidos:** `Dockerfile`, `Makefile`, `Gemfile`, `Rakefile`, `Procfile`, `Vagrantfile`, `Jenkinsfile`
+
+**Lista negra (archivos que se rechazan):**
+
+| Tipo | Ejemplos |
+|------|----------|
+| Minificados | `.min.js`, `.min.css`, `.map` |
+| Lockfiles | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `composer.lock`, `cargo.lock` |
+| Binarios | `.exe`, `.dll`, `.so`, `.class`, `.pyc`, `.wasm`, `.jar` |
+| Multimedia | `.png`, `.jpg`, `.mp4`, `.mp3`, `.zip`, `.tar`, `.gz` |
+| Bases de datos | `.sqlite`, `.db` |
+
+**Separadores por lenguaje (patron LangChain RecursiveCharacterTextSplitter):**
+
+Cada lenguaje tiene una lista jerarquica de separadores ordenados del mas especifico al menos especifico. Por ejemplo para TypeScript: `\nexport function ` → `\nexport class ` → `\nfunction ` → `\nclass ` → `\nconst ` → `\n\n` → `\n`. El algoritmo busca el separador mas especifico primero con un umbral agresivo (0.3 del tamano del fragmento) para mantener funciones y clases completas como unidades semanticas.
+
+**Funciones exportadas:**
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `obtenerSeparadores(nombre)` | Retorna separadores de lenguaje para un archivo, o `null` si no tiene especificos |
+| `esArchivoSoportado(nombre)` | Verifica si un archivo puede procesarse con RAG |
+| `esArchivoProhibido(nombre)` | Verifica si un archivo esta en la lista negra |
+| `extraerExtension(nombre)` | Extrae y normaliza la extension de un archivo |
+| `generarAceptarExtensiones()` | Genera la cadena para el atributo `accept` del input de archivos HTML |
 
 #### `procesador-rag.ts` - Orquestador del Pipeline
 
@@ -788,7 +842,8 @@ Pregunta del usuario:
 **`contenedor-chat.tsx`** gestiona la integracion RAG:
 
 1. **Al adjuntar archivo:** `manejarAdjuntoRAG()` procesa inmediatamente:
-   - Solo archivos de documento (PDF, TXT, etc.) → pipeline RAG completo
+   - Solo archivos soportados (~60 extensiones de codigo, PDFs, documentos) → pipeline RAG completo
+   - Archivos en lista negra (minificados, lockfiles, binarios) se rechazan automaticamente
    - Imagenes se ignoran (pasan directo a la API al enviar)
    - Si no hay conversacion activa, usa un ID temporal (`idRAGTemporal`)
    - El boton de enviar se bloquea hasta que la indexacion termine (`estaIndexandoRAG`)
@@ -881,3 +936,11 @@ webpack: (config) => {
 23. **Fusion de fragmentos adyacentes en contexto:** Cuando multiples fragmentos consecutivos del mismo documento son relevantes, se fusionan en un solo bloque antes de enviarse al LLM. Esto reduce la duplicacion del texto de solapamiento entre fragmentos y da al modelo una vision mas coherente y continua del contenido. Los fragmentos se presentan con su posicion relativa (seccion X de Y) para dar contexto espacial dentro del documento.
 
 24. **Barra de progreso animada con CSS transition:** El indicador RAG muestra una barra de progreso visual con `transition-all duration-700 ease-out`. Cuando el porcentaje salta entre valores reales (ej: 30% → 52%), la barra crece suavemente durante 700ms con easing. Esto da sensacion de progreso continuo sin datos falsos, complementando los batches mas pequenos (16 WASM / 64 GPU) que proveen actualizaciones mas frecuentes.
+
+25. **Fragmentacion inteligente por lenguaje (patron LangChain):** El sistema RAG detecta el lenguaje del archivo por su extension y usa separadores jerarquicos especificos para fragmentar el codigo en limites semanticos naturales. Para TypeScript/JavaScript se prioriza cortar en `\nexport function `, `\nclass `, `\ninterface `, etc. Para Python en `\nclass `, `\ndef `, `\nasync def `. Para Rust en `\nfn `, `\nstruct `, `\nimpl `. Se soportan 20+ lenguajes con separadores especificos. El umbral de corte es agresivo (0.3 vs 0.7 del generico) para mantener funciones y clases completas como unidades semanticas. Si no se encuentra un separador de lenguaje, cae al algoritmo generico (parrafo > oracion > linea > espacio). Cero dependencias nuevas: los separadores son arrays de strings, sin WASM ni parsers externos.
+
+26. **Registro centralizado de extensiones (`separadores-codigo.ts`):** Todas las extensiones soportadas, la lista negra y los separadores por lenguaje viven en un unico modulo centralizado. Esto elimina la duplicacion: `worker-embeddings`, `fragmentador-texto`, `extractor-texto`, `procesador-rag` y `entrada-mensaje` importan de la misma fuente de verdad. Agregar un nuevo lenguaje es agregar una entrada al mapa de separadores y la extension a la lista.
+
+27. **Priorizacion de documentos recien adjuntados (boost de recencia):** Cuando el usuario adjunta documentos con su mensaje, la busqueda RAG aplica un boost aditivo de `0.10` a los fragmentos de esos documentos. El patron esta inspirado en el `TimeWeightedVectorStoreRetriever` de LangChain (`puntuacion_final = similitud + boost`). El boost se propaga desde `contenedor-chat.tsx` → `procesador-rag.ts` → `almacen-vectores.ts` usando un `Set<string>` con los IDs de documentos recientes. Solo se aplica en `manejarEnvio()` — las acciones de edicion, reenvio y regeneracion no aplican boost (no hay adjuntos nuevos). Con embeddings binarios de 256 bits (donde vectores aleatorios promedian ~0.5 de similitud), un boost de 0.10 es suficiente para elevar significativamente los fragmentos relevantes del documento recien adjuntado sin desplazar completamente resultados de alta similitud de otros documentos.
+
+28. **Soporte de Jupyter Notebooks (.ipynb):** Los archivos `.ipynb` son JSON con un array `cells`. El parser extrae texto semantico de cada celda: markdown se preserva tal cual, codigo se envuelve en code fences (con lenguaje detectado del `metadata.kernelspec.language`, default `python`), y se concatenan salidas de texto (stdout, text/plain de execute_result). Las celdas se separan con `---` como puntos de corte naturales para el fragmentador. Salidas largas se truncan a 500 chars. Salidas binarias (imagenes) se ignoran. El parser existe duplicado en `extractor-texto.ts` (fallback hilo principal) y `worker-embeddings.ts` (Worker) porque el Worker no puede importar del extractor. Los separadores de fragmentacion combinan markdown (headings) y Python (class, def) para respetar limites semanticos del contenido mixto de notebooks.
