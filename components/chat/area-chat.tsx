@@ -3,12 +3,12 @@
 import { useRef, useEffect, useState } from "react"
 import { PanelLeftOpen, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { Conversacion, Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { BurbujaMensaje } from "@/components/chat/burbuja-mensaje"
 import { EntradaMensaje } from "@/components/chat/entrada-mensaje"
 import { AvatarAsistente } from "@/components/ui/icono-sparkle"
+import { useScrollAlFondo } from "@/lib/hooks"
 
 interface PropiedadesAreaChat {
   conversacion: Conversacion
@@ -51,15 +51,20 @@ export function AreaChat({
   estaIndexandoRAG,
   alEliminarDocumentoRAG,
 }: PropiedadesAreaChat) {
-  const referenciaFinal = useRef<HTMLDivElement>(null)
+  const { contenedorRef, irAlFondo } = useScrollAlFondo()
   const referenciaInputTitulo = useRef<HTMLInputElement>(null)
   const [estaEditandoTitulo, establecerEstaEditandoTitulo] = useState(false)
   const [tituloEdicion, establecerTituloEdicion] = useState("")
 
-  // Auto-scroll al final cuando hay nuevos mensajes
+  // Scroll instantaneo al fondo al cambiar de conversacion
   useEffect(() => {
-    referenciaFinal.current?.scrollIntoView({ behavior: "smooth" })
-  }, [conversacion.mensajes, estaEscribiendo])
+    irAlFondo(false)
+  }, [conversacion.id, irAlFondo])
+
+  // Cuando el usuario envía un prompt: ir al fondo para mostrar el espacio reservado
+  useEffect(() => {
+    if (estaEscribiendo) irAlFondo(false)
+  }, [estaEscribiendo, irAlFondo])
 
   // Focus en el input de titulo al entrar en modo edicion
   useEffect(() => {
@@ -96,7 +101,7 @@ export function AreaChat({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 shrink-0 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+                className="h-8 w-8 shrink-0 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
                 onClick={alAlternarBarraLateral}
               >
                 <PanelLeftOpen className="h-4 w-4" />
@@ -126,14 +131,17 @@ export function AreaChat({
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors max-w-[260px] cursor-pointer"
           >
             <span className="truncate">{conversacion.titulo || "Nueva conversacion"}</span>
-            <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-claude-texto-secundario)]" />
+            <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-claude-texto)]/50" />
           </button>
         )}
       </div>
 
-      {/* Mensajes */}
-      <ScrollArea className="flex-1 bg-[var(--color-claude-bg)] min-h-0">
-        <div className="mx-auto max-w-3xl px-4 py-6">
+      {/* Mensajes: el hook gestiona el scroll listener internamente */}
+      <div
+        ref={contenedorRef}
+        className="flex-1 overflow-y-auto bg-[var(--color-claude-bg)] min-h-0"
+      >
+        <div className="mx-auto max-w-3xl px-4 pt-14 pb-3">
           {conversacion.mensajes.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-24 text-center">
               <div className="mb-6">
@@ -168,11 +176,12 @@ export function AreaChat({
                   {mensajeError}
                 </div>
               )}
+              {/* Sentinel: 16px de espacio final evita que el contenido quede pegado al borde */}
+              <div className="min-h-4 shrink-0" aria-hidden="true" />
             </div>
           )}
-          <div ref={referenciaFinal} />
         </div>
-      </ScrollArea>
+      </div>
 
       {/* Contenedor inferior opaco para cortar el scroll */}
       <div className="bg-[var(--color-claude-bg)] relative z-10 mx-auto w-full">

@@ -33,6 +33,26 @@ const MAPA_ROLES: Record<string, "user" | "assistant"> = {
   asistente: "assistant",
 }
 
+// Instrucciones del sistema para formateo consistente y respuestas bien estructuradas
+const INSTRUCCIONES_SISTEMA = [
+  // Formato matematico
+  "MATH FORMATTING:",
+  "- Always use LaTeX delimiters for ALL mathematical expressions.",
+  "- Inline math: $...$ (e.g., $h_t = \\sigma(W_x x_t + W_h h_{t-1} + b)$)",
+  "- Display math: $$...$$ on its OWN line for important/key equations.",
+  "- Wrap ALL subscripts/superscripts in LaTeX: $h_t$, $x^2$, $W_{in}$, $C_{out}$, $W^{(l)}$",
+  "- Use LaTeX commands inside delimiters: $\\to$ not →, $\\times$ not ×, $\\sigma$ not σ",
+  "- Never leave math undelimited: no bare h_t, W^{(l)}, C_out, x^2 outside of $",
+  "",
+  // Estructura de respuesta
+  "RESPONSE STRUCTURE:",
+  "- When using numbered lists (1. 2. 3.), put the topic title in **bold**, then leave a blank line before the explanation text.",
+  "- Separate sections clearly with blank lines for visual breathing room.",
+  "- Use display math ($$...$$) centered on its own line for key formulas, definitions, and important results.",
+  "- Keep inline math ($...$) for variables and short expressions within sentences.",
+  "- Use headers (##, ###) for major sections in long answers.",
+].join("\n")
+
 // Tipo para el contenido multimodal de la Responses API
 type ContenidoMultimodal = (
   | { type: "input_text"; text: string }
@@ -98,6 +118,7 @@ export async function POST(solicitud: Request) {
 
     const respuestaStream = await clienteOpenAI.responses.create({
       model: modeloFinal,
+      instructions: INSTRUCCIONES_SISTEMA,
       input: entradaMensajes,
       stream: true,
       max_output_tokens: 4096,

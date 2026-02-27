@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { Copy, Check, FileText, Pencil, RotateCcw, X, ArrowUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { useState, useRef, useEffect } from "react"
+import { memo, useState, useRef, useEffect } from "react"
 import { useCopiarAlPortapapeles } from "@/lib/hooks"
 import { AvatarAsistente } from "@/components/ui/icono-sparkle"
 import { RenderizadorMarkdown } from "@/components/chat/renderizador-markdown"
@@ -23,7 +23,7 @@ interface PropiedadesBurbuja {
   alRegenerarRespuesta?: (idMensaje: string) => void
 }
 
-export function BurbujaMensaje({
+export const BurbujaMensaje = memo(function BurbujaMensaje({
   mensaje,
   estaEscribiendoEste = false,
   estaGenerando = false,
@@ -91,7 +91,7 @@ export function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={iniciarEdicion}
           >
             <Pencil className="h-3.5 w-3.5" />
@@ -104,7 +104,7 @@ export function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => copiar(mensaje.contenido)}
           >
             {haCopiado ? (
@@ -121,7 +121,7 @@ export function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => alReenviarMensaje?.(mensaje.id)}
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -140,7 +140,7 @@ export function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => copiar(mensaje.contenido)}
           >
             {haCopiado ? (
@@ -157,7 +157,7 @@ export function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => alRegenerarRespuesta?.(mensaje.id)}
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -167,7 +167,7 @@ export function BurbujaMensaje({
       </Tooltip>
       {/* Nombre del modelo que genero la respuesta */}
       {mensaje.modelo && (
-        <span className="ml-1.5 text-[11px] text-[var(--color-claude-texto-secundario)] font-medium select-none">
+        <span className="ml-1.5 text-[11px] text-[var(--color-claude-texto)]/60 font-medium select-none">
           {obtenerNombreModelo(mensaje.modelo)}
         </span>
       )}
@@ -198,10 +198,10 @@ export function BurbujaMensaje({
         {/* Burbuja */}
         <div
           className={cn(
-            "rounded-2xl px-4 py-3 text-sm leading-relaxed min-w-0 max-w-full",
+            "rounded-2xl px-4 py-3 min-w-0 max-w-full",
             esUsuario
-              ? "bg-[var(--color-claude-usuario-burbuja)] text-[var(--color-claude-texto)] rounded-br-md"
-              : "bg-transparent text-[var(--color-claude-texto)]"
+              ? "bg-[var(--color-claude-usuario-burbuja)] text-[var(--color-claude-texto)] text-sm leading-relaxed rounded-br-md"
+              : "bg-transparent"
           )}
         >
           {/* Adjuntos del usuario */}
@@ -275,10 +275,19 @@ export function BurbujaMensaje({
               {mensaje.busquedaWeb && (
                 <IndicadorBusqueda busquedaWeb={mensaje.busquedaWeb} />
               )}
-              <div className="prosa-markdown break-words">
-                <RenderizadorMarkdown contenido={mensaje.contenido} />
-                {estaEscribiendoEste && <span className="cursor-parpadeo" />}
-              </div>
+              {/* Tres puntos animados: esperando primer token (estilo ChatGPT/Claude) */}
+              {estaEscribiendoEste && !mensaje.contenido && !mensaje.pensamiento && !mensaje.busquedaWeb ? (
+                <div className="flex items-center gap-[3px] px-1 py-2 h-8">
+                  <span className="punto-cargando" />
+                  <span className="punto-cargando" />
+                  <span className="punto-cargando" />
+                </div>
+              ) : (
+                <div className="prosa-markdown break-words">
+                  <RenderizadorMarkdown contenido={mensaje.contenido} />
+                  {estaEscribiendoEste && <span className="cursor-parpadeo" />}
+                </div>
+              )}
               {/* Tarjetas de citaciones (fuera de prosa-markdown para evitar herencia de estilos) */}
               {mensaje.citaciones && mensaje.citaciones.length > 0 && (
                 <TarjetasCitacion citaciones={mensaje.citaciones} />
@@ -292,4 +301,14 @@ export function BurbujaMensaje({
       </div>
     </div>
   )
-}
+},
+// Comparador personalizado: solo recompara datos del mensaje, ignora callbacks.
+// Los callbacks (alEditarMensaje, etc.) son recreados en cada render del contenedor
+// padre pero su comportamiento no cambia → ignorarlos evita re-renders innecesarios.
+// El store preserva referencias de objetos no-modificados en actualizarUltimoMensaje,
+// por lo que anterior.mensaje === siguiente.mensaje es true para mensajes no streaming.
+(anterior, siguiente) =>
+  anterior.mensaje === siguiente.mensaje &&
+  anterior.estaEscribiendoEste === siguiente.estaEscribiendoEste &&
+  anterior.estaGenerando === siguiente.estaGenerando
+)

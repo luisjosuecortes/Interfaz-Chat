@@ -22,8 +22,10 @@ import {
   eliminarDocumento,
 } from "@/lib/rag/almacen-vectores"
 
-// Intervalo minimo entre actualizaciones de UI durante streaming (ms)
-const INTERVALO_THROTTLE = 30
+// Intervalo minimo entre actualizaciones de UI durante streaming (ms).
+// 50ms = 20fps de actualizaciones de texto: suficiente para streaming fluido,
+// menor carga de renderizado que 30ms (33fps), especialmente con conversaciones largas.
+const INTERVALO_THROTTLE = 50
 
 // Limite de caracteres para el historial enviado a la API
 // ~150K chars ≈ 37K-50K tokens, deja margen para contexto RAG y output del modelo
@@ -218,9 +220,6 @@ export function ContenedorChat() {
     const controlador = new AbortController()
     referenciaControlador.current = controlador
 
-    establecerEscribiendo(true)
-    agregarMensaje(idConversacion, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
-
     // Throttle para limitar re-renders durante streaming
     let ultimaActualizacionUI = 0
     let textoRespuestaFinal = ""
@@ -341,6 +340,11 @@ export function ContenedorChat() {
       }
     }
 
+    // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
+    // El usuario ve ambas burbujas al instante, sin ventana de "nada pasa"
+    establecerEscribiendo(true)
+    agregarMensaje(idConversacion, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+
     // Obtener contenido aumentado con contexto RAG si hay documentos indexados
     const contenidoConContexto = await obtenerContenidoConContextoRAG(idConversacion, contenido, idsDocumentosRecientes)
 
@@ -371,18 +375,24 @@ export function ContenedorChat() {
 
     const mensajeOriginal = conversacionActual.mensajes[indiceMensaje]
 
-    // Obtener contenido aumentado con contexto RAG
-    const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, nuevoContenido)
-
-    // Construir historial hasta este mensaje con contenido editado
-    const historialMensajes = conversacionActual.mensajes.slice(0, indiceMensaje).map((m) => ({
+    // Construir historial base sincrono (sin RAG aun, para tener el array listo)
+    const historialBase = conversacionActual.mensajes.slice(0, indiceMensaje).map((m) => ({
       rol: m.rol,
       contenido: m.contenido,
     }))
-    historialMensajes.push({ rol: "usuario", contenido: contenidoConContexto })
 
     // Actualizar store: cambiar contenido y eliminar mensajes posteriores
     editarYRecortarMensajes(conversacionActiva, idMensaje, nuevoContenido)
+
+    // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
+    establecerEscribiendo(true)
+    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+
+    // Obtener contenido aumentado con contexto RAG (ahora con el indicador ya visible)
+    const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, nuevoContenido)
+
+    // Completar historial con el contenido aumentado
+    const historialMensajes = [...historialBase, { rol: "usuario" as const, contenido: contenidoConContexto }]
 
     const esPrimerMensaje = indiceMensaje === 0
 
@@ -405,19 +415,23 @@ export function ContenedorChat() {
 
     const mensaje = conversacionActual.mensajes[indiceMensaje]
 
-    // Obtener contenido aumentado con contexto RAG
-    const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensaje.contenido)
-
-    // Construir historial hasta e incluyendo este mensaje
-    const historialMensajes = conversacionActual.mensajes.slice(0, indiceMensaje).map((m) => ({
+    // Construir historial base sincrono (sin RAG aun)
+    const historialBase = conversacionActual.mensajes.slice(0, indiceMensaje).map((m) => ({
       rol: m.rol,
       contenido: m.contenido,
     }))
-    historialMensajes.push({ rol: "usuario", contenido: contenidoConContexto })
 
     // Eliminar todo despues de este mensaje
     recortarMensajesDesde(conversacionActiva, indiceMensaje + 1)
 
+    // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
+    establecerEscribiendo(true)
+    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+
+    // Obtener contenido aumentado con contexto RAG (con indicador ya visible)
+    const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensaje.contenido)
+
+    const historialMensajes = [...historialBase, { rol: "usuario" as const, contenido: contenidoConContexto }]
     const esPrimerMensaje = indiceMensaje === 0
 
     await enviarConsultaAlModelo(
@@ -446,19 +460,23 @@ export function ContenedorChat() {
 
     const mensajeUsuario = conversacionActual.mensajes[indiceUsuario]
 
-    // Obtener contenido aumentado con contexto RAG
-    const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensajeUsuario.contenido)
-
-    // Construir historial hasta e incluyendo el mensaje del usuario
-    const historialMensajes = conversacionActual.mensajes.slice(0, indiceUsuario).map((m) => ({
+    // Construir historial base sincrono (sin RAG aun)
+    const historialBase = conversacionActual.mensajes.slice(0, indiceUsuario).map((m) => ({
       rol: m.rol,
       contenido: m.contenido,
     }))
-    historialMensajes.push({ rol: "usuario", contenido: contenidoConContexto })
 
     // Eliminar desde la respuesta del asistente en adelante
     recortarMensajesDesde(conversacionActiva, indiceMensaje)
 
+    // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
+    establecerEscribiendo(true)
+    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+
+    // Obtener contenido aumentado con contexto RAG (con indicador ya visible)
+    const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensajeUsuario.contenido)
+
+    const historialMensajes = [...historialBase, { rol: "usuario" as const, contenido: contenidoConContexto }]
     const esPrimerMensaje = indiceUsuario === 0
 
     await enviarConsultaAlModelo(

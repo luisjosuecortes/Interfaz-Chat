@@ -1,8 +1,6 @@
 // Extractor de texto para diferentes tipos de archivos
-// Soporta: archivos de texto plano, codigo fuente (~60 extensiones), PDF (via pdfjs-dist local) y Jupyter Notebooks (.ipynb)
+// Soporta: archivos de texto plano y PDF (via pdfjs-dist local)
 // Todo se ejecuta en el navegador, sin servidor
-
-import { EXTENSIONES_SOPORTADAS, NOMBRES_ARCHIVO_CONOCIDOS, extraerExtension } from "./separadores-codigo"
 
 // Resultado de la extraccion
 interface ResultadoExtraccion {
@@ -15,11 +13,13 @@ interface ResultadoExtraccion {
   }
 }
 
-// Prefijos MIME que son texto (fallback si la extension no esta registrada)
-const PREFIJOS_MIME_TEXTO = ["text/", "application/json", "application/xml", "application/javascript", "application/typescript"]
+// Extensiones que se tratan como texto plano
+const EXTENSIONES_TEXTO = new Set([
+  ".txt", ".md", ".csv", ".json", ".xml", ".html", ".css", ".js", ".ts", ".py",
+])
 
-// Limite de caracteres por salida de celda de notebook
-const LIMITE_SALIDA_NOTEBOOK = 500
+// Prefijos MIME que son texto
+const PREFIJOS_MIME_TEXTO = ["text/", "application/json", "application/xml"]
 
 /** Extrae texto de un archivo basandose en su tipo MIME y nombre */
 export async function extraerTextoDeArchivo(
@@ -28,11 +28,6 @@ export async function extraerTextoDeArchivo(
   nombreArchivo: string
 ): Promise<ResultadoExtraccion> {
   try {
-    // Notebooks: parsing JSON especial (antes de la verificacion de texto plano)
-    if (nombreArchivo.toLowerCase().endsWith(".ipynb")) {
-      return extraerTextoDeNotebook(contenidoBase64)
-    }
-
     if (esArchivoTexto(tipoMime, nombreArchivo)) {
       const texto = decodificarBase64ATexto(contenidoBase64)
       return {
@@ -59,19 +54,13 @@ export async function extraerTextoDeArchivo(
   }
 }
 
-/** Verifica si un archivo es de texto plano o codigo fuente */
+/** Verifica si un archivo es de texto plano */
 function esArchivoTexto(tipoMime: string, nombre: string): boolean {
-  const nombreLower = nombre.toLowerCase()
-
-  // Verificar nombres de archivo conocidos sin extension (Dockerfile, Makefile, etc.)
-  if (NOMBRES_ARCHIVO_CONOCIDOS.has(nombreLower)) return true
-
-  // Verificar extension en el registro centralizado (excluir .pdf y .ipynb que tienen su propia logica)
-  const extension = extraerExtension(nombre)
-  if (extension && extension !== ".pdf" && extension !== ".ipynb" && EXTENSIONES_SOPORTADAS.has(extension)) return true
-
-  // Fallback: verificar por prefijo MIME
-  return PREFIJOS_MIME_TEXTO.some((prefijo) => tipoMime.startsWith(prefijo))
+  const extension = nombre.toLowerCase().slice(nombre.lastIndexOf("."))
+  return (
+    EXTENSIONES_TEXTO.has(extension) ||
+    PREFIJOS_MIME_TEXTO.some((prefijo) => tipoMime.startsWith(prefijo))
+  )
 }
 
 /** Decodifica un Data URL base64 a texto UTF-8 */
@@ -152,112 +141,5 @@ async function extraerTextoDePDF(contenidoBase64: string): Promise<ResultadoExtr
       paginas: numPaginas,
       caracteres: textoCompleto.length,
     },
-  }
-}
-
-// === Parsing de Jupyter Notebooks (.ipynb) ===
-
-/** Extrae texto semantico de las salidas de una celda de codigo */
-function extraerSalidasCelda(outputs: Record<string, unknown>[]): string {
-  const textos: string[] = []
-
-  for (const salida of outputs) {
-    const tipo = salida.output_type as string
-
-    if (tipo === "stream") {
-      const texto = Array.isArray(salida.text) ? (salida.text as string[]).join("") : (salida.text as string) || ""
-      const limpio = texto.trim()
-      if (limpio) {
-        textos.push(limpio.length > LIMITE_SALIDA_NOTEBOOK
-          ? limpio.slice(0, LIMITE_SALIDA_NOTEBOOK) + "\n[... output truncated]"
-          : limpio)
-      }
-    } else if (tipo === "execute_result" || tipo === "display_data") {
-      const data = salida.data as Record<string, unknown> | undefined
-      if (data) {
-        const textoPlano = data["text/plain"]
-        if (textoPlano) {
-          const t = Array.isArray(textoPlano) ? (textoPlano as string[]).join("") : textoPlano as string
-          const limpio = t.trim()
-          if (limpio) {
-            textos.push(limpio.length > LIMITE_SALIDA_NOTEBOOK
-              ? limpio.slice(0, LIMITE_SALIDA_NOTEBOOK) + "\n[... output truncated]"
-              : limpio)
-          }
-        }
-      }
-    } else if (tipo === "error") {
-      const nombre = salida.ename as string | undefined
-      const valor = salida.evalue as string | undefined
-      if (nombre && valor) textos.push(`${nombre}: ${valor}`)
-    }
-  }
-
-  return textos.join("\n")
-}
-
-/** Extrae texto de un Jupyter Notebook (.ipynb) parseando las celdas JSON */
-function extraerTextoDeNotebook(contenidoBase64: string): ResultadoExtraccion {
-  const textoJSON = decodificarBase64ATexto(contenidoBase64)
-
-  let notebook: {
-    cells?: Array<{
-      cell_type?: string
-      source?: string | string[]
-      outputs?: Record<string, unknown>[]
-    }>
-    metadata?: {
-      kernelspec?: { language?: string }
-    }
-  }
-
-  try {
-    notebook = JSON.parse(textoJSON)
-  } catch {
-    return { exito: false, texto: "", error: "El archivo .ipynb no contiene JSON valido" }
-  }
-
-  if (!notebook.cells || !Array.isArray(notebook.cells)) {
-    return { exito: false, texto: "", error: "El notebook no contiene celdas" }
-  }
-
-  const lenguaje = notebook.metadata?.kernelspec?.language || "python"
-  const celdas: string[] = []
-
-  for (const celda of notebook.cells) {
-    const fuente = Array.isArray(celda.source) ? celda.source.join("") : celda.source || ""
-    if (!fuente.trim()) continue
-
-    switch (celda.cell_type) {
-      case "markdown":
-        celdas.push(fuente)
-        break
-
-      case "code": {
-        let textoCelda = "```" + lenguaje + "\n" + fuente + "\n```"
-        if (celda.outputs && celda.outputs.length > 0) {
-          const salidas = extraerSalidasCelda(celda.outputs)
-          if (salidas) textoCelda += "\n\nOutput:\n" + salidas
-        }
-        celdas.push(textoCelda)
-        break
-      }
-
-      case "raw":
-        celdas.push(fuente)
-        break
-    }
-  }
-
-  const textoCompleto = celdas.join("\n\n---\n\n")
-
-  if (!textoCompleto.trim()) {
-    return { exito: false, texto: "", error: "El notebook no contiene texto extraible" }
-  }
-
-  return {
-    exito: true,
-    texto: textoCompleto,
-    metadatos: { caracteres: textoCompleto.length },
   }
 }

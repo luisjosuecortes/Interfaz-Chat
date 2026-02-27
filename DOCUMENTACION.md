@@ -22,7 +22,7 @@ chatslm/
 │
 ├── components/                   # Componentes de React
 │   ├── chat/                     # Componentes especificos del chat
-│   │   ├── area-chat.tsx         # Area de mensajes con titulo flotante y boton de sidebar
+│   │   ├── area-chat.tsx         # Area de mensajes con auto-scroll inteligente, titulo flotante y boton de sidebar
 │   │   ├── barra-lateral.tsx     # Sidebar con branding "PenguinChat" (tipografia serif) y lista de conversaciones
 │   │   ├── bloque-codigo.tsx     # Bloque de codigo con syntax highlighting
 │   │   ├── burbuja-mensaje.tsx   # Mensaje individual (usuario/asistente)
@@ -32,7 +32,7 @@ chatslm/
 │   │   ├── indicador-pensamiento.tsx # Indicador de reasoning/pensamiento
 │   │   ├── indicador-rag.tsx     # Indicador de estado de documentos RAG
 │   │   ├── pantalla-inicio.tsx   # Pantalla inicial de bienvenida
-│   │   ├── renderizador-markdown.tsx # Procesador de Markdown
+│   │   ├── renderizador-markdown.tsx # Procesador de Markdown con pipeline LaTeX de 5 pasos
 │   │   └── tarjetas-citacion.tsx # Tarjetas de fuentes citadas
 │   └── ui/                       # Componentes de UI reutilizables (shadcn)
 │       ├── avatar.tsx
@@ -165,7 +165,8 @@ El componente raiz de la aplicacion. Gestiona:
 - Regeneracion de respuestas del asistente (`manejarRegenerarRespuesta`)
 - Generacion automatica de titulos en el primer intercambio
 - Control de la generacion (detener streaming)
-- Streaming con throttle de 30ms para limitar re-renders
+- Streaming con throttle de 50ms para limitar re-renders
+- **Patron reserved-space (ChatGPT/Claude):** en los 4 handlers, `establecerEscribiendo(true)` + `agregarMensaje(asistente, "")` ocurren ANTES del `await obtenerContenidoConContextoRAG`, garantizando espacio reservado y scroll inmediato sin ventana invisible
 - **Indexacion RAG al adjuntar** (`manejarAdjuntoRAG`): procesa documentos inmediatamente al adjuntarlos, no al enviar
 - **ID temporal de RAG** (`idRAGTemporal`): almacena vectores antes de crear la conversacion, luego transfiere
 - **Bloqueo de envio** (`estaIndexandoRAG`): impide enviar mientras se indexan documentos
@@ -199,6 +200,8 @@ Funcion `enviarMensajeConStreaming()` que:
 Renderiza un mensaje completo con:
 - Avatar del asistente (componente `AvatarAsistente`)
 - Contenido en Markdown (asistente) o texto plano (usuario)
+- **Indicador de tres puntos animados** (`.punto-cargando`) cuando `estaEscribiendoEste && !mensaje.contenido && !mensaje.pensamiento && !mensaje.busquedaWeb`: el espacio esta reservado pero aun no llego el primer token
+- Cursor parpadeante (`cursor-parpadeo`) en el ultimo caracter mientras el contenido llega via streaming
 - Indicadores de pensamiento y busqueda web
 - Tarjetas de citacion
 - Adjuntos (imagenes y archivos)
@@ -206,12 +209,70 @@ Renderiza un mensaje completo con:
 - Botones de accion: copiar, editar, reenviar, regenerar
 - Nombre del modelo que genero la respuesta (en asistente)
 
-### `renderizador-markdown.tsx` - Procesador Markdown
+**`React.memo` con comparador personalizado:**
+
+`BurbujaMensaje` esta envuelto en `memo` con una funcion comparadora que solo compara los props de datos (`mensaje`, `estaEscribiendoEste`, `estaGenerando`) e ignora los callbacks (`alEditarMensaje`, etc.). Los callbacks son recreados en cada render del componente padre pero su comportamiento es estable; ignorarlos en la comparacion evita re-renders innecesarios de todos los mensajes no-streaming.
+
+El store preserva las referencias de objeto de los mensajes no-modificados en `actualizarUltimoMensaje` (via `.map()` que solo crea un nuevo objeto para el ultimo mensaje). Por lo tanto, `anterior.mensaje === siguiente.mensaje` es `true` para todos los mensajes excepto el que esta en streaming, permitiendo que React salte sus renders completamente.
+
+### `area-chat.tsx` - Contenedor de mensajes
+
+Usa un `<div>` nativo con scroll via `useScrollAlFondo()` para control total durante streaming.
+
+**Logica de scroll (2 efectos):**
+- `useEffect([conversacion.id])`: scroll instantaneo al cambiar de conversacion
+- `useEffect([estaEscribiendo])`: cuando `estaEscribiendo` pasa a `true`, fuerza scroll al fondo para mostrar el espacio reservado del asistente
+
+El `MutationObserver` del hook se encarga del auto-scroll durante el streaming de tokens.
+
+**Sentinel div:**
+
+Despues del ultimo mensaje siempre existe un `<div className="min-h-4 shrink-0">`. Garantiza 16px de espacio en blanco al final de la lista, evitando que el indicador de tres puntos o el cursor parpadeante queden pegados al borde inferior del contenedor con scroll.
+
+**Padding del contenedor de mensajes:**
+
+El div interior que contiene la lista de mensajes usa `pt-14 pb-3`: 56px de padding superior para que el primer mensaje no quede oculto bajo el header flotante (titulo + boton de sidebar, posicionado `absolute top-3`), y 12px de padding inferior que junto con el sentinel dan un margen final compacto de ~28px debajo del ultimo mensaje.
+
+### `renderizador-markdown.tsx` - Procesador Markdown con Pipeline LaTeX
 
 Usa `react-markdown` con plugins:
-- `remark-gfm`: Tablas, task lists, tachado
-- `remark-math` + `rehype-katex`: Formulas matematicas con LaTeX
+- `remarkMath` (PRIMERO): Parsea delimitadores `$...$` y `$$...$$` antes de que GFM interprete `|` como tabla
+- `remarkGfm` (SEGUNDO): Tablas, task lists, tachado
+- `rehypeKatex`: Renderiza formulas LaTeX con opciones tolerantes (`throwOnError: false`, `strict: false`, `output: "htmlAndMathml"`)
 - Componentes personalizados para codigo, enlaces y tablas
+
+Envuelto en `React.memo`: como `BurbujaMensaje` ya esta memoizado, `RenderizadorMarkdown` no se re-renderiza para mensajes no-streaming. Durante streaming, `contenido` cambia en cada token, por lo que el componente re-renderiza normalmente solo para el mensaje activo. Los plugins (`pluginsRemark`, `pluginsRehype`) y `componentesMarkdown` son constantes fuera del componente para que `ReactMarkdown` no vea nuevas referencias en cada render.
+
+**Orden de plugins:** `[remarkMath, remarkGfm]` — remarkMath PRIMERO para que parsee `$...$` antes de que GFM interprete `|` como delimitador de tabla. Si el orden se invierte, formulas con `|` (como `$|x|$`) se rompen.
+
+**Pipeline de pre-procesamiento (`preprocesarMatematicas`):**
+
+Los LLMs no siempre producen LaTeX con delimitadores correctos. El pipeline de 5 pasos normaliza la salida antes de pasarla a remark-math:
+
+| Paso | Descripcion | Ejemplo |
+|------|-------------|---------|
+| 1. Delimitadores | Convierte `\[...\]` → `$$...$$` y `\(...\)` → `$...$` | `\(x^2\)` → `$x^2$` |
+| 2. Entornos | Envuelve `\begin{env}...\end{env}` huerfanos en `$$` | `\begin{align}...\end{align}` → `$$\begin{align}...\end{align}$$` |
+| 3. Bare sub/super | Detecta subscripts/superscripts sin llaves ni `$` | `h_t` → `$h_{t}$`, `C_in` → `$C_{in}$`, `x^2` → `$x^{2}$` |
+| 4. Braced sub/super | Detecta tokens con `^{...}` o `_{...}` sin `$` | `W^{(1)}` → `$W^{(1)}$`, `Conv^{(l)}` → `$Conv^{(l)}$` |
+| 5. Pipe escaping | Reemplaza `\|` por `\vert{}` dentro de `$` existentes | `$\|x\|$` → `$\vert{}x\vert{}$` |
+
+Cada paso usa un patron combinado `(bloques_protegidos)|(patron_a_transformar)` que preserva bloques de codigo y math existente sin marcadores temporales.
+
+**Deteccion de bare subscripts/superscripts (Paso 3):**
+
+Para evitar falsos positivos con identificadores de codigo como `my_variable` o `file_name`, el regex requiere:
+- Base de **una sola letra** (latina `A-Z/a-z` o griega `Α-ω`)
+- Lookbehind negativo: no precedido por word char, `\`, o `$`
+- Lookahead negativo: no seguido por word char, `{`, o `\`
+- Subscript/superscript de 1-4 caracteres alfanumericos
+- Soporta parejas encadenadas: `W_x^2` → `$W_{x}^{2}$`
+
+La funcion de reemplazo añade llaves automaticamente: `h_t` → `h_{t}` → `$h_{t}$` (necesario para KaTeX con subscripts multi-caracter como `C_in` → `$C_{in}$`).
+
+**Deteccion de braced subscripts/superscripts (Paso 4):**
+
+Captura tokens con al menos un `^{...}` o `_{...}` (con llaves). El patron de llaves soporta hasta 2 niveles de anidamiento: `{C_{out} × C_{in}}`. Los caracteres previos al operador pueden ser multi-caracter (ej: `Conv`, `∂L/∂W`) pero excluye separadores comunes para evitar capturar contexto no matematico.
 
 ### `bloque-codigo.tsx` - Syntax Highlighting
 
@@ -266,6 +327,7 @@ data: [FIN]
 - Herramienta de busqueda web habilitada por defecto
 - Reasoning habilitado para modelos con `tieneReasoning: true` (definido en `modelos.ts`)
 - `max_output_tokens: 4096`
+- **System prompt para formateo matematico** (`INSTRUCCIONES_SISTEMA`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, incluyendo subscripts bare (`$h_t$`, `$C_{out}$`), superscripts (`$W^{(l)}$`), y comandos LaTeX (`$\to$`, `$\times$`, `$\sigma$`). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
 
 ### `POST /api/titulo` - Generacion de Titulos
 
@@ -381,6 +443,39 @@ const {
 } = useAlmacenChat()
 ```
 
+### `useScrollAlFondo()`
+
+Hook para auto-scroll inteligente en contenedores de chat con streaming. Patron basado en Vercel AI Chatbot.
+
+```typescript
+// API completa del hook:
+const { contenedorRef, estaEnFondo, irAlFondo } = useScrollAlFondo()
+// contenedorRef: ref para el div contenedor de scroll
+// estaEnFondo: boolean - true si el usuario esta en los ultimos 100px del fondo
+// irAlFondo(suave?): scroll al fondo; suave=true → smooth, false → instant
+
+// Uso actual en area-chat.tsx (estaEnFondo no se necesita sin boton flotante):
+const { contenedorRef, irAlFondo } = useScrollAlFondo()
+```
+
+**Arquitectura interna:**
+- `MutationObserver` (childList + subtree + characterData): detecta texto nuevo en streaming y mensajes nuevos sin depender del ciclo de React
+- `ResizeObserver`: detecta cambios de altura (markdown renderizando, tablas, imagenes cargando)
+- `estaUsuarioScrolleandoRef`: previene auto-scroll cuando el usuario scrollea activamente (flag con reset a 150ms)
+- Double ref pattern: `estaEnFondoRef` sincronizado con `estaEnFondo` state para evitar closures viejos en los observers
+- `rafId` deduplicador: un solo `requestAnimationFrame` por frame durante streaming intenso
+- `behavior: "instant"` en auto-scroll de contenido (evita jitter por animaciones colisionando); `"smooth"` disponible via `irAlFondo(true)` para posible boton futuro de ir al fondo
+- Umbral: **100px** desde el fondo
+
+**Patron de scroll completo en `area-chat.tsx` (2 capas):**
+
+| Capa | Mecanismo | Para que |
+|------|-----------|----------|
+| **1. Scroll al enviar** | `useEffect([estaEscribiendo])` → `irAlFondo(false)` | Mostrar espacio reservado inmediatamente, sin importar donde este el usuario |
+| **2. Auto-scroll durante streaming** | `MutationObserver` + `rAF` + `irAlFondo()` | Seguir el texto mientras llegan tokens, si el usuario estaba en el fondo |
+
+Usado en: `area-chat.tsx`
+
 ---
 
 ## Utilidades (`lib/utils.ts`)
@@ -420,9 +515,23 @@ const {
 | Clase | Efecto |
 |-------|--------|
 | `.cursor-parpadeo` | Cursor parpadeante durante streaming |
+| `.punto-cargando` | Tres puntos que saltan (espera primer token del asistente); color `--color-claude-texto` para contraste sobre el fondo beige |
 | `.icono-busqueda-pulsando` | Pulsacion del icono de busqueda web |
 | `.puntos-animados` | Secuencia "..." animada |
 | `.icono-pensamiento-girando` | Rotacion del spinner de reasoning |
+
+### Estilos KaTeX (Formulas Matematicas)
+
+Estilos personalizados dentro de `.prosa-markdown` para integrar KaTeX con el tema visual:
+
+| Selector | Efecto |
+|----------|--------|
+| `.katex` | Tamaño de fuente `1.05em` para legibilidad |
+| `.katex-display` | Scroll horizontal para formulas anchas, padding vertical |
+| `.katex-error` | Color secundario y tamaño reducido (errores tolerados) |
+| `.katex-html` | `white-space: nowrap` para evitar quiebres en formulas |
+
+La hoja de estilos de KaTeX (`katex/dist/katex.min.css`) se importa en `layout.tsx` para las fuentes matematicas.
 
 ---
 
@@ -471,7 +580,7 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 
 1. **Chat conversacional** con multiples modelos y proveedores de IA
 2. **Selector de modelos con panel de proveedores** (Popover): trigger a la derecha, panel con sidebar de iconos de proveedores a la izquierda y modelos agrupados por categoria a la derecha
-3. **Streaming en tiempo real** con throttle de 30ms para rendimiento optimo
+3. **Streaming en tiempo real** con throttle de 50ms para rendimiento optimo
 4. **Busqueda web integrada** con indicador visual y fuentes citadas
 5. **Reasoning/Pensamiento** visible con summary en streaming
 6. **Adjuntos multimodales** (imagenes y archivos de texto)
@@ -486,7 +595,7 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 15. **Gestion de conversaciones** (crear, renombrar, eliminar, creacion lazy al enviar primer mensaje)
 16. **Generacion automatica de titulos** en el primer intercambio
 17. **Titulo flotante editable** sin header fijo, como boton absolute sobre el area de chat
-18. **Markdown completo** con GFM, matematicas KaTeX y highlighting de codigo
+18. **Markdown completo** con GFM, formulas matematicas KaTeX (pipeline de 5 pasos para normalizar LaTeX de LLMs), highlighting de codigo y auto-scroll inteligente
 19. **Nombre del modelo** visible junto a los botones de accion del asistente
 20. **Branding PenguinChat** con tipografia serif en la cabecera del sidebar
 21. **Tarjetas de citacion** con preview de YouTube y favicons
@@ -551,51 +660,51 @@ RAG es una tecnica para dar a un LLM informacion que no tiene en su entrenamient
 Archivo subido por el usuario (base64)
     │
     ▼
-┌─── motor-embeddings.ts (proxy) ──────────────────────────────────┐
-│  decodificarBase64() → ArrayBuffer                               │
-│  Transferable Object (zero-copy) ──────────────────────────┐     │
-│                                                             │     │
-│  ┌── worker-embeddings.ts (Web Worker) ────────────────────▼────┐│
-│  │                                                               ││
-│  │  Pipeline streaming con async generators:                     ││
-│  │                                                               ││
-│  │  1. extraerPaginas()     2. fragmentarStream()   3. vectorizar││
-│  │  ┌────────────────┐    ┌───────────────────┐    ┌────────────┐││
-│  │  │ async function*│    │ async function*   │    │ auto-batch │││
-│  │  │ PDF.js (sub-   │ →  │ yield chunks con  │ →  │ WebGPU: 64 │││
-│  │  │ Worker, 4 pags │    │ solapamiento      │    │ WASM: 16   │││
-│  │  │ en paralelo)   │    │ elastico:         │    │ ONNX(384)  │││
-│  │  │                │    │ normal: 2000/200  │    │ →MRL(256)  │││
-│  │  │ yield pagina   │    │ grande: 3000/300  │    │ →Bin(32B)  │││
-│  │  └────────────────┘    └───────────────────┘    └────────────┘││
-│  │                                                               ││
-│  │  Heuristicas: >5MB → chunks grandes, <100 chars → skip pag   ││
-│  │                                                               ││
-│  │  ──── Transferable Objects (embeddings binarios) ────────►    ││
-│  └───────────────────────────────────────────────────────────────┘│
-│                              │                                    │
-│                              ▼                                    │
-│                          ┌──────────────────┐                    │
-│                          │ Almacen Vectores │                    │
-│                          │ Map<convId, docs>│                    │
-│                          │ + IndexedDB      │                    │
-│                          └──────────────────┘                    │
-└──────────────────────────────────────────────────────────────────┘
+┌─── motor-embeddings.ts (proxy) ──────────────────────────────────────┐
+│  decodificarBase64() → ArrayBuffer                                   │
+│  Transferable Object (zero-copy) ──────────────────────────┐         │
+│                                                            │         │
+│  ┌── worker-embeddings.ts (Web Worker) ────────────────────▼──────┐  │
+│  │                                                                │  │
+│  │  Pipeline streaming con async generators:                      │  │
+│  │                                                                │  │
+│  │  1. extraerPaginas()     2. fragmentarStream()   3. vectorizar │  │
+│  │  ┌────────────────┐    ┌───────────────────┐    ┌────────────┐ │  │
+│  │  │ async function*│    │ async function*   │    │ auto-batch │ │  │
+│  │  │ PDF.js (sub-   │ →  │ yield chunks con  │ →  │ WebGPU: 64 │ │  │
+│  │  │ Worker, 4 pags │    │ solapamiento      │    │ WASM: 16   │ │  │
+│  │  │ en paralelo)   │    │ elastico:         │    │ ONNX(384)  │ │  │
+│  │  │                │    │ normal: 2000/200  │    │ →MRL(256)  │ │  │
+│  │  │ yield pagina   │    │ grande: 3000/300  │    │ →Bin(32B)  │ │  │
+│  │  └────────────────┘    └───────────────────┘    └────────────┘ │  │
+│  │                                                                │  │
+│  │  Heuristicas: >5MB → chunks grandes, <100 chars → skip pag     │  │
+│  │                                                                │  │
+│  │  ──── Transferable Objects (embeddings binarios) ────────►     │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                              │                                       │
+│                              ▼                                       │
+│                          ┌──────────────────┐                        │
+│                          │ Almacen Vectores │                        │
+│                          │ Map<convId, docs>│                        │
+│                          │ + IndexedDB      │                        │
+│                          └──────────────────┘                        │
+└──────────────────────────────────────────────────────────────────────┘
 
 Usuario hace una pregunta
     │
     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    PIPELINE DE BUSQUEDA                          │
-│                                                                  │
-│  1. Embedding consulta     2. Similitud Hamming      3. Contexto   │
-│  ┌──────────────────┐    ┌────────────────────┐   ┌──────────┐   │
-│  │ "resume el doc"  │    │ Top-10 fragmentos  │   │ Prepende │   │
-│  │ → Uint8Array[32] │ →  │ mas similares      │ → │ al msg   │   │
-│  └──────────────────┘    │ (dist. Hamming,    │   │ del user │   │
-│                          │  umbral > 0.55)    │   └──────────┘   │
-│                          └────────────────────┘                  │
-└──────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                    PIPELINE DE BUSQUEDA                           │
+│                                                                   │
+│  1. Embedding consulta    2. Similitud Hamming    3. Contexto     │
+│  ┌──────────────────┐    ┌────────────────────┐   ┌──────────┐    │
+│  │ "resume el doc"  │    │ Top-10 fragmentos  │   │ Prepende │    │
+│  │ → Uint8Array[32] │ →  │ mas similares      │ → │ al msg   │    │
+│  └──────────────────┘    │ (dist. Hamming,    │   │ del user │    │
+│                          │  umbral > 0.55)    │   └──────────┘    │
+│                          └────────────────────┘                   │
+└───────────────────────────────────────────────────────────────────┘
     │
     ▼
 LLM recibe: [contexto de fragmentos] + pregunta del usuario

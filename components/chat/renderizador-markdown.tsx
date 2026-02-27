@@ -1,5 +1,6 @@
 "use client"
 
+import { memo } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -10,6 +11,168 @@ import { BloqueCodigoConResaltado } from "@/components/chat/bloque-codigo"
 interface PropiedadesRenderizador {
   contenido: string
 }
+
+// ===== Pre-procesamiento de formulas matematicas =====
+
+// Patron de llaves anidadas (hasta 2 niveles): {C_{out} × C_{in}}
+const LLAVES = '\\{(?:[^{}]|\\{(?:[^{}]|\\{[^{}]*\\})*\\})*\\}'
+
+/**
+ * Regex para tokens con ^{...} o _{...} (con llaves) sin delimitadores $.
+ * Captura tokens como: W^{(1)}, Conv^{(l)}, Σ_{l=1}^L, ∂L/∂W^{(l)}
+ *
+ * Patron combinado: (protegido)|(token_math)
+ * - Grupo 1: codigo/math existente → devolver intacto
+ * - Grupo 2: token sin delimitadores → envolver en $...$
+ */
+const REGEX_MATH_SIN_DELIMITADORES = new RegExp(
+  '(```[\\s\\S]*?```|`[^`]+`|\\$\\$[\\s\\S]*?\\$\\$|\\$(?!\\$)[^\\n$]*?\\$(?!\\$))' +
+  '|' +
+  '(?<!\\$)' +
+  '([^\\s\\^_$(),;.:\\[\\]→←×·≠≤≥∈]*' +
+  '[\\^_]' + LLAVES +
+  '(?:[\\^_](?:' + LLAVES + '|\\w))*' +
+  ')',
+  'g'
+)
+
+/**
+ * Regex para subscripts/superscripts "desnudos" sin llaves ni delimitadores $.
+ * Captura tokens como: h_t, S_t, W_x, C_in, C_out, x^2, n^L, σ_i, h_t^{(l)}
+ *
+ * Requiere base de una sola letra (latina o griega) para evitar falsos
+ * positivos con identificadores de codigo como my_variable o file_name.
+ *
+ * Patron combinado: (protegido)|(token_bare_math)
+ * - Grupo 1: codigo/math existente → devolver intacto
+ * - Grupo 2: token con sub/super desnudo → envolver en $...$ con llaves
+ */
+const REGEX_BARE_SUB_SUPER = new RegExp(
+  // Grupo 1: bloques protegidos
+  '(```[\\s\\S]*?```|`[^`]+`|\\$\\$[\\s\\S]*?\\$\\$|\\$(?!\\$)[^\\n$]*?\\$(?!\\$))' +
+  '|' +
+  // Grupo 2: token matematico con subscript/superscript desnudo
+  '(?<![A-Za-z0-9_\\\\$])' +                    // no precedido por word char, \, $
+  '(' +
+    '[A-Za-z\\u0391-\\u03C9]' +                  // base: una sola letra (latina o griega)
+    '(?:' +
+      '[_^]' +                                    // operador sub/superscript
+      '(?:' + LLAVES + '|[A-Za-z0-9]{1,4})' +   // contenido con llaves O 1-4 chars desnudos
+    ')+' +                                        // una o mas parejas encadenadas
+  ')' +
+  '(?![A-Za-z0-9_{\\\\])',                       // no seguido por word char, {, \
+  'g'
+)
+
+/**
+ * Pre-procesa el contenido para mejorar el renderizado de formulas matematicas.
+ *
+ * Pipeline de 5 pasos que resuelve incompatibilidades entre LLMs y remark-math:
+ * 1. Convierte \[...\] → $$...$$ y \(...\) → $...$
+ * 2. Envuelve entornos \begin{env}...\end{env} huerfanos en $$
+ * 3. Auto-detecta subscripts/superscripts desnudos (h_t, x^2, C_in) y los envuelve en $
+ * 4. Auto-detecta tokens con ^{...}/_{...} sin delimitadores y los envuelve en $
+ * 5. Reemplaza | por \vert{} dentro de formulas para evitar conflicto con tablas GFM
+ *
+ * Cada paso usa un patron combinado (protegido|transformar) para preservar
+ * bloques de codigo y math existente sin marcadores temporales.
+ */
+function preprocesarMatematicas(contenido: string): string {
+  if (!contenido) return contenido
+  let texto = contenido
+
+  // PASO 1: Convertir \[...\] y \(...\) a $$ y $
+  texto = texto.replace(
+    /(```[\s\S]*?```|`[^`]+`)|\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)/g,
+    (coincidencia, codigo, display, inline) => {
+      if (codigo !== undefined) return codigo
+      if (display !== undefined) return `\n$$\n${display.trim()}\n$$\n`
+      if (inline !== undefined) return `$${inline}$`
+      return coincidencia
+    }
+  )
+
+  // PASO 2: Envolver \begin{env}...\end{env} huerfanos en $$
+  texto = texto.replace(
+    /(```[\s\S]*?```|`[^`]+`|\$\$[\s\S]*?\$\$|\$(?!\$)[^\n$]*?\$(?!\$))|(\\begin\{(\w+\*?)\}[\s\S]*?\\end\{\3\})/g,
+    (coincidencia, protegido, entorno) => {
+      if (protegido !== undefined) return protegido
+      if (entorno !== undefined) return `\n$$\n${entorno}\n$$\n`
+      return coincidencia
+    }
+  )
+
+  // PASO 3: Auto-detectar subscripts/superscripts desnudos (sin llaves ni $)
+  // Ejemplo: h_t → $h_{t}$, C_in → $C_{in}$, x^2 → $x^{2}$, W_x^2 → $W_{x}^{2}$
+  texto = texto.replace(
+    REGEX_BARE_SUB_SUPER,
+    (coincidencia, protegido: string | undefined, tokenBare: string | undefined) => {
+      if (protegido !== undefined) return protegido
+      if (tokenBare !== undefined) {
+        // Añadir llaves a subscripts/superscripts desnudos para KaTeX
+        const conLlaves = tokenBare.replace(/([_^])([A-Za-z0-9]{1,4})/g, '$1{$2}')
+        return `$${conLlaves}$`
+      }
+      return coincidencia
+    }
+  )
+
+  // PASO 4: Auto-detectar tokens con ^{...} o _{...} sin delimitadores $
+  // Ejemplo: W^{(1)} → $W^{(1)}$, Σ_{l=1}^L → $Σ_{l=1}^L$
+  texto = texto.replace(
+    REGEX_MATH_SIN_DELIMITADORES,
+    (coincidencia, protegido: string | undefined, tokenMath: string | undefined) => {
+      if (protegido !== undefined) return protegido
+      if (tokenMath !== undefined) return `$${tokenMath}$`
+      return coincidencia
+    }
+  )
+
+  // PASO 5: Reemplazar | por \vert{} dentro de formulas inline/display
+  texto = texto.replace(
+    /(```[\s\S]*?```|`[^`]+`)|(\$\$[\s\S]*?\$\$)|(\$(?!\$)(?:[^$\n]|\\\$)*?\$(?!\$))/g,
+    (coincidencia, codigo, displayMath, inlineMath) => {
+      if (codigo !== undefined) return codigo
+      if (displayMath !== undefined) return displayMath.replace(/(?<!\\)\|/g, "\\vert{}")
+      if (inlineMath !== undefined) return inlineMath.replace(/(?<!\\)\|/g, "\\vert{}")
+      return coincidencia
+    }
+  )
+
+  return texto
+}
+
+// Opciones de KaTeX: tolerante a errores durante streaming, accesible, con macros comunes
+const opcionesKatex = {
+  throwOnError: false,
+  strict: false,
+  output: "htmlAndMathml" as const,
+  minRuleThickness: 0.06,
+  macros: {
+    "\\R": "\\mathbb{R}",
+    "\\N": "\\mathbb{N}",
+    "\\Z": "\\mathbb{Z}",
+    "\\C": "\\mathbb{C}",
+    "\\Q": "\\mathbb{Q}",
+    "\\argmin": "\\operatorname{arg\\,min}",
+    "\\argmax": "\\operatorname{arg\\,max}",
+    "\\softmax": "\\operatorname{softmax}",
+    "\\sigmoid": "\\operatorname{sigmoid}",
+    "\\ReLU": "\\operatorname{ReLU}",
+    "\\grad": "\\nabla",
+    "\\diag": "\\operatorname{diag}",
+    "\\tr": "\\operatorname{tr}",
+    "\\rank": "\\operatorname{rank}",
+    "\\sign": "\\operatorname{sign}",
+    "\\KL": "\\operatorname{KL}",
+  },
+  maxSize: 500,
+  maxExpand: 500,
+}
+
+// remarkMath PRIMERO para que parsee $...$ antes de que GFM interprete | como tabla
+const pluginsRemark = [remarkMath, remarkGfm]
+const pluginsRehype = [[rehypeKatex, opcionesKatex]] as Parameters<typeof ReactMarkdown>[0]["rehypePlugins"]
 
 // Componentes personalizados para react-markdown
 const componentesMarkdown: Components = {
@@ -67,16 +230,18 @@ const componentesMarkdown: Components = {
   },
 }
 
-export function RenderizadorMarkdown({ contenido }: PropiedadesRenderizador) {
+export const RenderizadorMarkdown = memo(function RenderizadorMarkdown({ contenido }: PropiedadesRenderizador) {
   if (!contenido) return null
+
+  const contenidoProcesado = preprocesarMatematicas(contenido)
 
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
+      remarkPlugins={pluginsRemark}
+      rehypePlugins={pluginsRehype}
       components={componentesMarkdown}
     >
-      {contenido}
+      {contenidoProcesado}
     </ReactMarkdown>
   )
-}
+})
