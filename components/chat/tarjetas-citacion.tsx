@@ -110,7 +110,7 @@ export function TarjetasCitacion({ citaciones }: PropiedadesTarjetasCitacion) {
                 href={citacion.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="group/tarjeta shrink-0 w-[200px] rounded-lg border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] hover:border-[var(--color-claude-acento)] hover:shadow-sm transition-all overflow-hidden"
+                className="group/tarjeta shrink-0 w-[200px] rounded-lg border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] hover:border-[var(--color-claude-texto)] hover:shadow-sm transition-all overflow-hidden"
               >
                 {/* Thumbnail de YouTube */}
                 {idYoutube && (

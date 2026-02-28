@@ -2,7 +2,7 @@
 
 import type { Mensaje } from "@/lib/tipos"
 import { cn } from "@/lib/utils"
-import { Copy, Check, FileText, Pencil, RotateCcw, X, ArrowUp } from "lucide-react"
+import { Copy, Check, Pencil, RotateCcw, X, ArrowUp } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { memo, useState, useRef, useEffect } from "react"
@@ -11,7 +11,8 @@ import { AvatarAsistente } from "@/components/ui/icono-sparkle"
 import { RenderizadorMarkdown } from "@/components/chat/renderizador-markdown"
 import { IndicadorBusqueda } from "@/components/chat/indicador-busqueda"
 import { TarjetasCitacion } from "@/components/chat/tarjetas-citacion"
-import { IndicadorPensamiento } from "@/components/chat/indicador-pensamiento"
+import { BotonPensamiento, ContenidoPensamiento } from "@/components/chat/indicador-pensamiento"
+import { TarjetaArchivoConMiniatura } from "@/components/chat/tarjeta-archivo"
 import { obtenerNombreModelo } from "@/lib/modelos"
 
 interface PropiedadesBurbuja {
@@ -43,7 +44,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
       const textarea = referenciaTextarea.current
       textarea.style.height = "auto"
       textarea.style.height = `${Math.min(textarea.scrollHeight, 300)}px`
-      textarea.focus()
+      textarea.focus({ preventScroll: true })
       textarea.selectionStart = textarea.value.length
       textarea.selectionEnd = textarea.value.length
     }
@@ -91,7 +92,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)] hover:text-[#000000] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={iniciarEdicion}
           >
             <Pencil className="h-3.5 w-3.5" />
@@ -104,7 +105,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)] hover:text-[#000000] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => copiar(mensaje.contenido)}
           >
             {haCopiado ? (
@@ -121,7 +122,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)] hover:text-[#000000] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => alReenviarMensaje?.(mensaje.id)}
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -140,7 +141,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)] hover:text-[#000000] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => copiar(mensaje.contenido)}
           >
             {haCopiado ? (
@@ -157,7 +158,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+            className="h-7 w-7 text-[var(--color-claude-texto)] hover:text-[#000000] hover:bg-[var(--color-claude-sidebar-hover)]"
             onClick={() => alRegenerarRespuesta?.(mensaje.id)}
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -167,96 +168,138 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
       </Tooltip>
       {/* Nombre del modelo que genero la respuesta */}
       {mensaje.modelo && (
-        <span className="ml-1.5 text-[11px] text-[var(--color-claude-texto)]/60 font-medium select-none">
+        <span className="ml-1.5 text-[11px] text-[var(--color-claude-texto-secundario)] font-medium select-none">
           {obtenerNombreModelo(mensaje.modelo)}
         </span>
       )}
     </div>
   )
 
+  // Derivado: sin texto de respuesta aun (solo para dots de carga)
+  const estaSoloEsperando = !esUsuario && estaEscribiendoEste && !mensaje.contenido
+  // Estado del pensamiento expandido (levantado desde IndicadorPensamiento)
+  const [pensamientoExpandido, establecerPensamientoExpandido] = useState(false)
+  // El avatar va en flex row si es el asistente
+  const tieneIndicadorInline = !esUsuario
+
   return (
     <div
       className={cn(
-        "flex gap-3 group",
-        esUsuario ? "justify-end" : "justify-start"
+        "group",
+        esUsuario && estaEditando ? "w-full" : esUsuario ? "flex justify-end" : ""
       )}
     >
-      {/* Avatar del asistente */}
+      {/* Zona del avatar: fila superior + contenido expandido + búsqueda debajo */}
       {!esUsuario && (
-        <div className="mt-1">
-          <AvatarAsistente tamano="sm" />
+        <div className="mb-3.5">
+          {/* Fila: Avatar + botón de estado (dots o pensamiento) */}
+          <div className={cn(
+            tieneIndicadorInline ? "flex items-center gap-3" : ""
+          )}>
+            <AvatarAsistente tamano="sm" />
+
+            {/* Indicador inline: si hay pensamiento mostramos el botón, si no, mostramos animación o un adorno elegante */}
+            {mensaje.pensamiento ? (
+              <BotonPensamiento
+                pensamiento={mensaje.pensamiento}
+                estaExpandido={pensamientoExpandido}
+                alAlternar={() => establecerPensamientoExpandido(!pensamientoExpandido)}
+              />
+            ) : estaSoloEsperando ? (
+              <div className="flex items-center gap-[3px]">
+                <span className="punto-cargando" />
+                <span className="punto-cargando" />
+                <span className="punto-cargando" />
+              </div>
+            ) : (
+              <div className="flex items-center text-[var(--color-claude-texto-secundario)] opacity-60 cursor-default select-none">
+                <span className="text-xs font-medium">Respuesta</span>
+              </div>
+            )}
+          </div>
+          {/* Contenido expandido del pensamiento (debajo, ancho completo) */}
+          {mensaje.pensamiento && (
+            <ContenidoPensamiento
+              pensamiento={mensaje.pensamiento}
+              estaExpandido={pensamientoExpandido}
+            />
+          )}
+          {/* Búsqueda web: siempre debajo del pensamiento */}
+          {mensaje.busquedaWeb && (
+            <div>
+              <IndicadorBusqueda busquedaWeb={mensaje.busquedaWeb} />
+            </div>
+          )}
         </div>
       )}
 
       {/* Contenido del mensaje */}
       <div
         className={cn(
-          "relative max-w-[85%] min-w-0",
+          "relative min-w-0",
+          esUsuario && estaEditando ? "w-full max-w-full" : esUsuario ? "max-w-[85%]" : "max-w-full",
           esUsuario ? "flex flex-col items-end" : "flex flex-col items-start"
         )}
       >
         {/* Burbuja */}
         <div
           className={cn(
-            "rounded-2xl px-4 py-3 min-w-0 max-w-full",
-            esUsuario
-              ? "bg-[var(--color-claude-usuario-burbuja)] text-[var(--color-claude-texto)] text-sm leading-relaxed rounded-br-md"
-              : "bg-transparent"
+            "rounded-2xl min-w-0 max-w-full",
+            esUsuario && estaEditando
+              ? "w-full overflow-hidden border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] shadow-[var(--sombra-xs)] focus-within:border-[var(--color-claude-texto)] focus-within:shadow-[var(--sombra-input-foco)] ring-1 ring-transparent focus-within:ring-[var(--color-claude-texto)]/10"
+              : esUsuario
+                ? "bg-[var(--color-claude-usuario-burbuja)] text-[var(--color-claude-texto)] text-sm leading-relaxed rounded-br-md px-4 py-3"
+                : "bg-transparent"
           )}
         >
           {/* Adjuntos del usuario */}
           {esUsuario && mensaje.adjuntos && mensaje.adjuntos.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
               {mensaje.adjuntos.map((adjunto) => (
-                <div key={adjunto.id}>
-                  {adjunto.tipo === "imagen" ? (
-                    <div className="h-32 w-32 rounded-lg overflow-hidden">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={adjunto.contenido}
-                        alt={adjunto.nombre}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 rounded-lg border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] px-2.5 py-1.5">
-                      <FileText className="h-4 w-4 text-[var(--color-claude-acento)] shrink-0" />
-                      <span className="text-xs max-w-[150px] truncate">{adjunto.nombre}</span>
-                    </div>
-                  )}
-                </div>
+                <TarjetaArchivoConMiniatura
+                  key={adjunto.id}
+                  adjunto={adjunto}
+                  variante="expandida"
+                />
               ))}
             </div>
           )}
 
           {/* Contenido del mensaje o modo edicion */}
           {esUsuario && estaEditando ? (
-            <div className="min-w-[280px]">
-              <textarea
-                ref={referenciaTextarea}
-                value={textoEdicion}
-                onChange={manejarCambioEdicion}
-                onKeyDown={manejarTeclaEdicion}
-                className="w-full resize-none bg-transparent text-sm text-[var(--color-claude-texto)] focus:outline-none min-h-[24px] max-h-[300px] py-0"
-                rows={1}
-              />
-              <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t border-[var(--color-claude-input-border)]">
+            <div className="w-full">
+              <div className="px-3 pt-2">
+                <textarea
+                  ref={referenciaTextarea}
+                  value={textoEdicion}
+                  onChange={manejarCambioEdicion}
+                  onKeyDown={manejarTeclaEdicion}
+                  className="w-full resize-none bg-transparent text-sm text-[var(--color-claude-texto)] focus:outline-none min-h-[24px] max-h-[300px] py-1.5 scrollbar-oculto"
+                  rows={1}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2 px-3 pb-2 pt-1 border-t border-transparent">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 px-3 text-xs text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)]"
+                  className="h-8 px-3 text-xs font-medium text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] rounded-lg transition-colors"
                   onClick={cancelarEdicion}
                 >
-                  <X className="h-3 w-3 mr-1" />
+                  <X className="h-3.5 w-3.5 mr-1" />
                   Cancelar
                 </Button>
                 <Button
                   size="sm"
-                  className="h-7 px-3 text-xs bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white rounded-lg"
+                  className={cn(
+                    "h-8 px-4 text-xs font-medium rounded-lg transition-all",
+                    textoEdicion.trim()
+                      ? "bg-[var(--color-claude-acento)] hover:bg-[var(--color-claude-acento-hover)] text-white shadow-[var(--sombra-xs)]"
+                      : "bg-[var(--color-claude-input-border)] text-[var(--color-claude-texto-secundario)] cursor-not-allowed"
+                  )}
                   disabled={!textoEdicion.trim()}
                   onClick={guardarEdicion}
                 >
-                  <ArrowUp className="h-3 w-3 mr-1" />
+                  <ArrowUp className="h-3.5 w-3.5 mr-1" />
                   Enviar
                 </Button>
               </div>
@@ -267,22 +310,8 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
             </div>
           ) : (
             <>
-              {/* Indicador de pensamiento/reasoning */}
-              {mensaje.pensamiento && (
-                <IndicadorPensamiento pensamiento={mensaje.pensamiento} />
-              )}
-              {/* Indicador de búsqueda web */}
-              {mensaje.busquedaWeb && (
-                <IndicadorBusqueda busquedaWeb={mensaje.busquedaWeb} />
-              )}
-              {/* Tres puntos animados: esperando primer token (estilo ChatGPT/Claude) */}
-              {estaEscribiendoEste && !mensaje.contenido && !mensaje.pensamiento && !mensaje.busquedaWeb ? (
-                <div className="flex items-center gap-[3px] px-1 py-2 h-8">
-                  <span className="punto-cargando" />
-                  <span className="punto-cargando" />
-                  <span className="punto-cargando" />
-                </div>
-              ) : (
+              {/* Contenido de texto */}
+              {(mensaje.contenido || !estaSoloEsperando) && (
                 <div className="prosa-markdown break-words">
                   <RenderizadorMarkdown contenido={mensaje.contenido} />
                   {estaEscribiendoEste && <span className="cursor-parpadeo" />}
@@ -302,13 +331,13 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
     </div>
   )
 },
-// Comparador personalizado: solo recompara datos del mensaje, ignora callbacks.
-// Los callbacks (alEditarMensaje, etc.) son recreados en cada render del contenedor
-// padre pero su comportamiento no cambia → ignorarlos evita re-renders innecesarios.
-// El store preserva referencias de objetos no-modificados en actualizarUltimoMensaje,
-// por lo que anterior.mensaje === siguiente.mensaje es true para mensajes no streaming.
-(anterior, siguiente) =>
-  anterior.mensaje === siguiente.mensaje &&
-  anterior.estaEscribiendoEste === siguiente.estaEscribiendoEste &&
-  anterior.estaGenerando === siguiente.estaGenerando
+  // Comparador personalizado: solo recompara datos del mensaje, ignora callbacks.
+  // Los callbacks (alEditarMensaje, etc.) son recreados en cada render del contenedor
+  // padre pero su comportamiento no cambia → ignorarlos evita re-renders innecesarios.
+  // El store preserva referencias de objetos no-modificados en actualizarUltimoMensaje,
+  // por lo que anterior.mensaje === siguiente.mensaje es true para mensajes no streaming.
+  (anterior, siguiente) =>
+    anterior.mensaje === siguiente.mensaje &&
+    anterior.estaEscribiendoEste === siguiente.estaEscribiendoEste &&
+    anterior.estaGenerando === siguiente.estaGenerando
 )

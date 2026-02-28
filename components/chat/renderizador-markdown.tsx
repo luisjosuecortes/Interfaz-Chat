@@ -193,7 +193,7 @@ const componentesMarkdown: Components = {
     // Codigo inline
     return (
       <code
-        className="bg-[#e8e3d8] text-[var(--color-claude-acento)] px-1.5 py-0.5 rounded text-[0.85em] font-mono"
+        className="bg-[#f3f4f6] text-[#1a1a1a] px-1.5 py-0.5 rounded text-[0.85em] font-mono font-medium"
         {...resto}
       >
         {children}

@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
-import { ArrowUp, Paperclip, X, ChevronDown, Check, Square, FileText } from "lucide-react"
+import { useState, useRef, useCallback, useMemo } from "react"
+import { ArrowUp, Paperclip, ChevronDown, Check, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -10,6 +10,7 @@ import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDORES, obtenerProveedorDeModelo } from "@/lib/modelos"
 import { IconoProveedor } from "@/components/ui/iconos-proveedor"
 import { IndicadorRAG } from "@/components/chat/indicador-rag"
+import { TarjetaArchivoConMiniatura } from "@/components/chat/tarjeta-archivo"
 import { generarAceptarExtensiones } from "@/lib/rag/separadores-codigo"
 
 // Tipos de archivos aceptados
@@ -53,8 +54,9 @@ export function EntradaMensaje({
   const tieneContenido = texto.trim().length > 0 || adjuntos.length > 0
 
   // Categorias y modelos del proveedor activo
-  const categoriasDelProveedor = CATEGORIAS_MODELOS.filter(
-    (c) => c.proveedor === proveedorActivo
+  const categoriasDelProveedor = useMemo(
+    () => CATEGORIAS_MODELOS.filter((c) => c.proveedor === proveedorActivo),
+    [proveedorActivo]
   )
 
   const puedeEnviar = tieneContenido && !estaDeshabilitado && !estaIndexandoRAG
@@ -129,39 +131,17 @@ export function EntradaMensaje({
   return (
     <div className="px-4 pb-4">
       <div className="mx-auto max-w-3xl">
-        <div className="rounded-2xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] shadow-sm focus-within:border-[var(--color-claude-acento)] focus-within:shadow-md transition-all">
+        <div className="overflow-hidden rounded-2xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] shadow-[var(--sombra-xs)] focus-within:border-[var(--color-claude-texto)] focus-within:shadow-[var(--sombra-input-foco)] transition-all duration-200 ring-1 ring-transparent focus-within:ring-[var(--color-claude-texto)]/10">
           {/* Vista previa de adjuntos */}
           {adjuntos.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 py-1.5">
               {adjuntos.map((adjunto) => (
-                <div
+                <TarjetaArchivoConMiniatura
                   key={adjunto.id}
-                  className="relative group flex items-center gap-1.5 rounded-lg border border-[var(--color-claude-input-border)] bg-[var(--color-claude-sidebar)] px-2 py-1.5"
-                >
-                  {adjunto.tipo === "imagen" ? (
-                    <div className="h-10 w-10 rounded overflow-hidden shrink-0">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={adjunto.contenido}
-                        alt={adjunto.nombre}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                  ) : (
-                    <FileText className="h-4 w-4 text-[var(--color-claude-acento)] shrink-0" />
-                  )}
-                  <span className="text-xs text-[var(--color-claude-texto)] max-w-[120px] truncate">
-                    {adjunto.nombre}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5 shrink-0 text-[var(--color-claude-texto-secundario)] hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={() => eliminarAdjunto(adjunto.id)}
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </div>
+                  adjunto={adjunto}
+                  variante="compacta"
+                  alEliminar={() => eliminarAdjunto(adjunto.id)}
+                />
               ))}
             </div>
           )}
@@ -185,7 +165,7 @@ export function EntradaMensaje({
               disabled={estaDeshabilitado}
               rows={1}
               className={cn(
-                "w-full resize-none bg-transparent text-sm text-[var(--color-claude-texto)] placeholder:text-[var(--color-claude-texto-secundario)] focus:outline-none",
+                "w-full resize-none bg-transparent text-sm text-[var(--color-claude-texto)] placeholder:text-[var(--color-claude-texto-secundario)] focus:outline-none scrollbar-oculto",
                 "min-h-[24px] max-h-[200px] py-1.5 pt-2"
               )}
             />
@@ -306,7 +286,7 @@ export function EntradaMensaje({
                                   </div>
                                 </div>
                                 {modeloSeleccionado === modelo.id && (
-                                  <Check className="h-4 w-4 text-[var(--color-claude-acento)] shrink-0" />
+                                  <Check className="h-4 w-4 text-[var(--color-claude-texto)] shrink-0" />
                                 )}
                               </button>
                             ))}

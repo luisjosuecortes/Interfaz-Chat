@@ -34,7 +34,7 @@ export function IndicadorRAG({ documentos, totalFragmentos }: PropiedadesIndicad
         <Tooltip key={doc.id}>
           <TooltipTrigger asChild>
             <div className="flex items-center gap-1.5 rounded-md border border-[var(--color-claude-input-border)] bg-[var(--color-claude-sidebar)] px-2 py-1">
-              <Loader2 className="h-3 w-3 animate-spin text-[var(--color-claude-acento)]" />
+              <Loader2 className="h-3 w-3 animate-spin text-[var(--color-claude-texto)]" />
               <span className="text-xs text-[var(--color-claude-texto)] max-w-[100px] truncate">
                 {doc.nombre}
               </span>
@@ -45,7 +45,7 @@ export function IndicadorRAG({ documentos, totalFragmentos }: PropiedadesIndicad
                       className="h-full rounded-full transition-all duration-700 ease-out"
                       style={{
                         width: `${doc.progreso}%`,
-                        backgroundColor: 'var(--color-claude-acento)',
+                        backgroundColor: 'var(--color-claude-texto)',
                       }}
                     />
                   </div>

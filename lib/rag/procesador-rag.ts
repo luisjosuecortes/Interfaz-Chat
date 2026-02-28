@@ -2,7 +2,6 @@
 // Pipeline: archivo → Worker (extraccion + fragmentacion + vectorizacion) → almacenamiento
 // Busqueda: consulta → embedding binario → similitud Hamming → contexto para el LLM
 // El Worker procesa todo: React solo recibe progreso y resultados
-// Soporta ~60 extensiones de codigo con fragmentacion inteligente por lenguaje
 
 import type { Adjunto, DocumentoRAG, FragmentoDocumento, ResultadoBusqueda } from "@/lib/tipos"
 import { generarId } from "@/lib/utils"
@@ -14,7 +13,7 @@ import {
   tieneFragmentosListos,
   esperarHidratacion,
 } from "./almacen-vectores"
-import { esArchivoSoportado, esArchivoProhibido } from "./separadores-codigo"
+import { EXTENSIONES_SOPORTADAS } from "./separadores-codigo"
 
 // Callback de progreso de procesamiento
 export type CallbackProgreso = (
@@ -24,12 +23,11 @@ export type CallbackProgreso = (
   error?: string
 ) => void
 
-/** Determina si un adjunto debe procesarse con RAG (no imagenes, no archivos prohibidos).
- *  Usa el registro centralizado de extensiones soportadas y lista negra. */
+/** Determina si un adjunto debe procesarse con RAG (no imagenes) */
 export function debeUsarRAG(adjunto: Adjunto): boolean {
   if (adjunto.tipo === "imagen") return false
-  if (esArchivoProhibido(adjunto.nombre)) return false
-  return esArchivoSoportado(adjunto.nombre)
+  const extension = adjunto.nombre.toLowerCase().slice(adjunto.nombre.lastIndexOf("."))
+  return EXTENSIONES_SOPORTADAS.has(extension)
 }
 
 /** Procesa un documento completo para RAG
@@ -99,8 +97,7 @@ export async function procesarDocumentoParaRAG(
   }
 }
 
-/** Busca contexto relevante para una consulta en los documentos de la conversacion.
- *  idsDocumentosRecientes: IDs de documentos adjuntados en el mensaje actual para boost */
+/** Busca contexto relevante para una consulta en los documentos de la conversacion */
 export async function buscarContextoRelevante(
   conversacionId: string,
   consulta: string,

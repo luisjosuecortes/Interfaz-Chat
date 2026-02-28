@@ -40,12 +40,13 @@ let tamanoBatch = 32
 
 // === Utilidades de transferencia ===
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function enviar(mensaje: unknown, transferibles?: Transferable[]) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const workerContext = self as any
   if (transferibles) {
-    (self as any).postMessage(mensaje, transferibles)
+    workerContext.postMessage(mensaje, transferibles)
   } else {
-    (self as any).postMessage(mensaje)
+    workerContext.postMessage(mensaje)
   }
 }
 

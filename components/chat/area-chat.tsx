@@ -101,7 +101,7 @@ export function AreaChat({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 shrink-0 text-[var(--color-claude-texto)]/70 hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
+                className="h-8 w-8 shrink-0 text-[var(--color-claude-texto)] hover:text-[#000000] hover:bg-[var(--color-claude-sidebar-hover)]"
                 onClick={alAlternarBarraLateral}
               >
                 <PanelLeftOpen className="h-4 w-4" />
@@ -123,7 +123,7 @@ export function AreaChat({
               if (e.key === "Escape") cancelarEdicionTitulo()
             }}
             onBlur={confirmarEdicionTitulo}
-            className="w-56 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-sm font-medium px-3 py-1.5 rounded-lg border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-acento)]"
+            className="w-56 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-sm font-medium px-3 py-1.5 rounded-lg border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-texto)]"
           />
         ) : (
           <button
@@ -155,22 +155,27 @@ export function AreaChat({
               </p>
             </div>
           ) : (
-            <div className="space-y-6">
-              {conversacion.mensajes.map((mensaje, indice) => (
-                <BurbujaMensaje
-                  key={mensaje.id}
-                  mensaje={mensaje}
-                  estaEscribiendoEste={
-                    estaEscribiendo &&
-                    indice === conversacion.mensajes.length - 1 &&
-                    mensaje.rol === "asistente"
-                  }
-                  estaGenerando={estaEscribiendo}
-                  alEditarMensaje={alEditarMensaje}
-                  alReenviarMensaje={alReenviarMensaje}
-                  alRegenerarRespuesta={alRegenerarRespuesta}
-                />
-              ))}
+            <div>
+              {conversacion.mensajes.map((mensaje, indice) => {
+                const mensajeAnterior = indice > 0 ? conversacion.mensajes[indice - 1] : null
+                const mismoRemitente = mensajeAnterior && mensajeAnterior.rol === mensaje.rol
+                return (
+                  <div key={mensaje.id} className={indice === 0 ? "" : mismoRemitente ? "mt-1.5" : "mt-6"}>
+                    <BurbujaMensaje
+                      mensaje={mensaje}
+                      estaEscribiendoEste={
+                        estaEscribiendo &&
+                        indice === conversacion.mensajes.length - 1 &&
+                        mensaje.rol === "asistente"
+                      }
+                      estaGenerando={estaEscribiendo}
+                      alEditarMensaje={alEditarMensaje}
+                      alReenviarMensaje={alReenviarMensaje}
+                      alRegenerarRespuesta={alRegenerarRespuesta}
+                    />
+                  </div>
+                )
+              })}
               {mensajeError && (
                 <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
                   {mensajeError}

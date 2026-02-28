@@ -81,7 +81,7 @@ export function BarraLateral({
 
             <button
               onClick={alNuevaConversacion}
-              className="text-base font-medium text-[var(--color-claude-texto)] hover:text-[var(--color-claude-acento)] transition-colors cursor-pointer"
+              className="text-base font-medium text-[var(--color-claude-texto)] hover:text-[var(--color-claude-texto)]/70 transition-colors cursor-pointer"
               style={{ fontFamily: "var(--font-serif)" }}
             >
               PenguinChat
@@ -137,7 +137,7 @@ export function BarraLateral({
                             if (e.key === "Escape") cancelarEdicion()
                           }}
                           onBlur={confirmarEdicion}
-                          className="flex-1 min-w-0 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-[13px] px-1.5 py-0.5 rounded border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-acento)]"
+                          className="flex-1 min-w-0 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-[13px] px-1.5 py-0.5 rounded border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-texto)]"
                           autoFocus
                           onClick={(e) => e.stopPropagation()}
                         />
@@ -199,7 +199,7 @@ export function BarraLateral({
           {/* Pie de la barra lateral */}
           <div className="border-t border-[var(--color-claude-input-border)] p-3">
             <div className="flex items-center gap-2 text-xs text-[var(--color-claude-texto-secundario)]">
-              <div className="h-7 w-7 rounded-full bg-gradient-to-br from-[var(--color-claude-acento)] to-[#e8956d] flex items-center justify-center text-white text-xs font-medium">
+              <div className="h-7 w-7 rounded-full bg-gradient-to-br from-[#1a1a1a] to-[#374151] flex items-center justify-center text-white text-xs font-medium">
                 U
               </div>
               <span className="font-medium">Usuario</span>

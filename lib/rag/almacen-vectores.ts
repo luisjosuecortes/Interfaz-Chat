@@ -111,11 +111,6 @@ function eliminarDeIDB(conversacionId: string): void {
 // Umbral minimo para filtrar fragmentos con similitud baja (ruido)
 const UMBRAL_SIMILITUD_MINIMA = 0.55
 
-// Boost aditivo para documentos adjuntados en el mensaje actual
-// Con embeddings binarios de 256 bits, vectores aleatorios promedian ~0.5 de similitud
-// Un boost de 0.10 asegura que documentos recientes suban significativamente en el ranking
-const BOOST_DOCUMENTO_RECIENTE = 0.10
-
 /** Similitud por distancia de Hamming normalizada (0..1)
  *  Compara bit a bit dos embeddings binarios Uint8Array[32]
  *  Retorna 1 = identicos, 0 = opuestos */
@@ -197,8 +192,7 @@ export function transferirDocumentos(idOrigen: string, idDestino: string): void 
 }
 
 /** Busca los fragmentos mas similares por distancia de Hamming.
- *  Filtra resultados por debajo del umbral de similitud minima.
- *  idsDocumentosRecientes: boost aditivo para documentos adjuntados en el mensaje actual */
+ *  Filtra resultados por debajo del umbral de similitud minima. */
 export function buscarFragmentosSimilares(
   conversacionId: string,
   embeddingConsulta: Uint8Array,
@@ -208,6 +202,7 @@ export function buscarFragmentosSimilares(
   const documentos = almacenesPorConversacion.get(conversacionId)
   if (!documentos) return []
 
+  const BOOST_RECENCIA = 0.10
   const resultados: ResultadoBusqueda[] = []
 
   for (const documento of documentos) {
@@ -217,11 +212,7 @@ export function buscarFragmentosSimilares(
     const totalFragmentos = documento.fragmentos.length
     for (const fragmento of documento.fragmentos) {
       let similitud = similitudBinaria(embeddingConsulta, fragmento.embedding)
-
-      if (esReciente) {
-        similitud = Math.min(1.0, similitud + BOOST_DOCUMENTO_RECIENTE)
-      }
-
+      if (esReciente) similitud += BOOST_RECENCIA
       if (similitud >= UMBRAL_SIMILITUD_MINIMA) {
         resultados.push({ fragmento, similitud, nombreDocumento: documento.nombre, totalFragmentosDocumento: totalFragmentos })
       }

@@ -54,10 +54,10 @@ export function PantallaInicio({
       )}
 
       {/* Contenido central */}
-      <div className="flex flex-1 flex-col items-center justify-center px-4">
-        <div className="max-w-2xl w-full text-center">
+      <div className="flex flex-1 flex-col items-center justify-center w-full">
+        <div className="w-full text-center">
           {/* Logo y titulo */}
-          <div className="mb-8">
+          <div className="mb-8 px-4">
             <div className="flex justify-center mb-5">
               <AvatarAsistente tamano="lg" />
             </div>

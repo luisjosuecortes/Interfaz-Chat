@@ -11,9 +11,9 @@ export function IndicadorBusqueda({ busquedaWeb }: PropiedadesIndicadorBusqueda)
   const estaActiva = busquedaWeb.estado !== "completada"
 
   return (
-    <div className="flex items-start gap-2.5 py-2">
+    <div className="flex items-start gap-2.5 pt-1.5 pb-2.5 pl-8">
       <div className={`shrink-0 mt-0.5 ${estaActiva ? "icono-busqueda-pulsando" : ""}`}>
-        <Globe className="h-4 w-4 text-[var(--color-claude-acento)]" />
+        <Globe className="h-4 w-4 text-[var(--color-claude-texto)]" />
       </div>
       <div className="min-w-0">
         <span className="text-sm font-medium text-[var(--color-claude-texto)]">

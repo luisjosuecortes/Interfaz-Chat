@@ -26,7 +26,7 @@ export function AvatarAsistente({ tamano = "sm" }: PropiedadesAvatarAsistente) {
   }
 
   return (
-    <div className={`${clasesTamano[tamano]} shrink-0 rounded-full bg-gradient-to-br from-[var(--color-claude-acento)] to-[#e8956d] flex items-center justify-center shadow-sm`}>
+    <div className={`${clasesTamano[tamano]} shrink-0 rounded-full bg-gradient-to-br from-[#1a1a1a] to-[#374151] flex items-center justify-center shadow-sm`}>
       <IconoSparkle tamano={tamanoIcono[tamano]} />
     </div>
   )

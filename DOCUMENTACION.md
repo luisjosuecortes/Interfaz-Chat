@@ -29,21 +29,19 @@ chatslm/
 │   │   ├── contenedor-chat.tsx   # Componente orquestador principal
 │   │   ├── entrada-mensaje.tsx   # Input con selector de modelos (Popover dos paneles) y adjuntos
 │   │   ├── indicador-busqueda.tsx    # Indicador de busqueda web activa
-│   │   ├── indicador-pensamiento.tsx # Indicador de reasoning/pensamiento
+│   │   ├── indicador-pensamiento.tsx # Boton + contenido expandido de reasoning (separados para layout flex)
 │   │   ├── indicador-rag.tsx     # Indicador de estado de documentos RAG
 │   │   ├── pantalla-inicio.tsx   # Pantalla inicial de bienvenida
 │   │   ├── renderizador-markdown.tsx # Procesador de Markdown con pipeline LaTeX de 5 pasos
+│   │   ├── tarjeta-archivo.tsx     # Tarjeta premium de archivo con franja de color, badge y miniatura PDF
 │   │   └── tarjetas-citacion.tsx # Tarjetas de fuentes citadas
 │   └── ui/                       # Componentes de UI reutilizables (shadcn)
-│       ├── avatar.tsx
 │       ├── button.tsx            # Boton con variantes (CVA)
 │       ├── dropdown-menu.tsx     # Menu desplegable (Radix UI)
 │       ├── icono-sparkle.tsx     # Icono sparkle y avatar del asistente
 │       ├── iconos-proveedor.tsx  # Iconos SVG de proveedores de IA (OpenAI, etc.)
 │       ├── popover.tsx           # Popover accesible (Radix UI)
 │       ├── scroll-area.tsx       # Area de scroll personalizada (con fix para Radix issue #926)
-│       ├── separator.tsx
-│       ├── sheet.tsx             # Panel lateral/drawer
 │       └── tooltip.tsx           # Tooltips accesibles
 │
 ├── lib/                          # Logica de negocio y utilidades
@@ -55,6 +53,7 @@ chatslm/
 │   │   ├── separadores-codigo.ts # Registro centralizado de extensiones, separadores por lenguaje y lista negra
 │   │   ├── worker-embeddings.ts  # Web Worker: pipeline streaming con async generators
 │   │   └── procesador-rag.ts     # Orquestador RAG (delega al motor)
+│   ├── use-miniatura-pdf.ts       # Hook para generar miniaturas de PDFs (pdfjs-dist, cache global)
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
 │   ├── cliente-chat.ts           # Cliente de streaming para la API
 │   ├── hooks.ts                  # Hooks personalizados reutilizables
@@ -198,22 +197,96 @@ Funcion `enviarMensajeConStreaming()` que:
 ### `burbuja-mensaje.tsx` - Mensaje Individual
 
 Renderiza un mensaje completo con:
-- Avatar del asistente (componente `AvatarAsistente`)
+- Avatar del asistente (componente `AvatarAsistente`) posicionado **arriba del mensaje** (fuera del flujo flex del texto)
 - Contenido en Markdown (asistente) o texto plano (usuario)
-- **Indicador de tres puntos animados** (`.punto-cargando`) cuando `estaEscribiendoEste && !mensaje.contenido && !mensaje.pensamiento && !mensaje.busquedaWeb`: el espacio esta reservado pero aun no llego el primer token
-- Cursor parpadeante (`cursor-parpadeo`) en el ultimo caracter mientras el contenido llega via streaming
-- Indicadores de pensamiento y busqueda web
+- **Indicadores de estado junto al avatar** (en la misma linea via `flex items-center gap-3`):
+  - `BotonPensamiento` (si hay razonamiento). Se despliega debajo en ancho completo.
+  - Tres puntos animados (`.punto-cargando`) cuando el mensaje está en curso pero no hay razonamiento bloqueante.
+  - Adorno estático de **Respuesta** (texto gris) cuando el mensaje carga directamente sin pensar.
+  - `IndicadorBusqueda` se muestra **debajo** de toda esta fila y del pensamiento, con un margen superior e indentación generosa (`pl-8 pt-1.5 pb-2.5`) para fluir orgánicamente de forma vertical.
 - Tarjetas de citacion
 - Adjuntos (imagenes y archivos)
-- Modo edicion inline para mensajes del usuario
+- Modo edicion inline para mensajes del usuario (ancho completo, bordes interactivos, transicion instantanea)
 - Botones de accion: copiar, editar, reenviar, regenerar
 - Nombre del modelo que genero la respuesta (en asistente)
+
+**Variables derivadas clave:**
+
+```typescript
+// Solo para dots de carga animados vs estáticos
+const estaSoloEsperando = !esUsuario && estaEscribiendoEste && !mensaje.contenido
+// Estado levantado del pensamiento
+const [pensamientoExpandido, establecerPensamientoExpandido] = useState(false)
+// El avatar va en flex row si es el asistente (para adornos inline)
+const tieneIndicadorInline = !esUsuario
+```
+
+**Layout del avatar (estilo Gemini):**
+
+```
+[Avatar] Pensando... O Respuesta    ← flex row (boton / estático)
+   ┃ Contenido del pensamiento...   ← debajo, ancho completo
+🌐 Busqueda web completada          ← debajo, indentado extra
+   "consulta 1" "consulta 2"
+Texto de respuesta...               ← contenido normal
+```
+
+- **Fila superior** (`flex items-center gap-3`): Avatar + `BotonPensamiento` O adorno "Respuesta" estático/cargando.
+- **Contenido expandido**: `ContenidoPensamiento` fluye directamente debajo de la fila superior, a ancho completo con `border-l-2`.
+- **Busqueda web**: `IndicadorBusqueda` fluye completamente debajo, utilizando márgenes asimétricos para balance visual.
 
 **`React.memo` con comparador personalizado:**
 
 `BurbujaMensaje` esta envuelto en `memo` con una funcion comparadora que solo compara los props de datos (`mensaje`, `estaEscribiendoEste`, `estaGenerando`) e ignora los callbacks (`alEditarMensaje`, etc.). Los callbacks son recreados en cada render del componente padre pero su comportamiento es estable; ignorarlos en la comparacion evita re-renders innecesarios de todos los mensajes no-streaming.
 
 El store preserva las referencias de objeto de los mensajes no-modificados en `actualizarUltimoMensaje` (via `.map()` que solo crea un nuevo objeto para el ultimo mensaje). Por lo tanto, `anterior.mensaje === siguiente.mensaje` es `true` para todos los mensajes excepto el que esta en streaming, permitiendo que React salte sus renders completamente.
+
+**Modo edicion premium:**
+Al editar un mensaje del usuario, la burbuja se expande a ancho completo con bordes interactivos que coinciden con la barra de entrada principal. Transicion instantanea (sin animaciones CSS). Botones: "Cancelar" (ghost con icono X) y "Enviar" (acento con icono ArrowUp, deshabilitado si vacio).
+
+### `tarjeta-archivo.tsx` - Tarjeta de Archivo Minimalista
+
+Componente de visualizacion de archivos adjuntos con tres modos: imagen, PDF con miniatura, y archivo generico. Diseno minimalista tipo chip/pill.
+
+**Categorias de archivo (para seleccion de icono):**
+
+| Categoria | Icono | Extensiones |
+|-----------|-------|-------------|
+| `pdf` | `FileText` | `.pdf` |
+| `codigo` | `FileCode` | `.js`, `.ts`, `.tsx`, `.jsx`, `.py`, `.css`, `.html` |
+| `datos` | `FileSpreadsheet` | `.csv`, `.json`, `.xml` |
+| `config` | `File` | (extensiones no listadas explicitamente, ej: `.yaml`, `.toml`) |
+| `texto` | `FileText` | `.md`, `.txt` (y cualquier extension sin categoria explicita) |
+| `imagen` | `File` | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` |
+
+**Estructura del componente:**
+- `TarjetaArchivoConMiniatura` (wrapper con `memo`): resuelve el problema de usar hooks dentro de `.map()` al encapsular `useMiniaturaPDF` en un componente separado
+- `TarjetaArchivo` (componente puro con `memo`): renderiza la tarjeta segun el tipo:
+  - **Imagenes**: miniatura directa del contenido base64 (h-12/h-24)
+  - **PDFs**: miniatura compacta generada por `useMiniaturaPDF` + nombre truncado (w-100px/w-130px)
+  - **Archivos genericos**: chip minimalista con icono gris + nombre truncado + extension en texto gris (h-9/h-10)
+- **Variantes**: `compacta` (input, mas pequena) y `expandida` (burbuja de mensaje, mas grande)
+- **Boton eliminar**: aparece en hover (opacity transition), solo si se pasa `alEliminar`
+- **Sin franjas de color, sin badges coloreados, sin fondos de icono**: diseno limpio con fondo `--color-claude-sidebar` y borde sutil
+
+### `use-miniatura-pdf.ts` - Hook de Miniaturas PDF
+
+Hook que genera una miniatura de la primera pagina de un PDF.
+
+**Proceso:**
+1. Recibe `id`, `contenido` (base64) y `habilitado` como parametros
+2. Si ya existe en el cache global (`Map<string, string>`), retorna inmediatamente el ObjectURL generado
+3. Importa dinamicamente `pdfjs-dist` y configura el worker a `/pdf.worker.min.mjs`
+4. Carga el documento PDF y obtiene la pagina 1
+5. Crea un canvas offscreen con ancho de 160px (escalado por `devicePixelRatio`, max 2x) y altura proporcional
+6. Renderiza la pagina al canvas y obtiene un Blob (ahorrando memoria respecto a DataURLs pesados)
+7. Genera un `URL.createObjectURL(blob)`, lo almacena en cache global y retorna
+
+**Caracteristicas:**
+- **Cache global** (fuera del componente): `Map<string, string>` indexado por ID del adjunto. Sobrevive re-renders y desmontajes.
+- **Limpieza estructurada:** Exporta `limpiarCacheMiniaturaPDF` que revoca el `ObjectURL` y limpia el mapa; es llamado automáticamente por `almacen-chat.ts` al eliminar una conversación, previniendo fugas de RAM.
+- **Limpieza de efecto**: si el componente se desmonta antes de completar, no actualiza el estado
+- **Cast de tipos**: usa `as Parameters<typeof pagina.render>[0]` para satisfacer los tipos de pdfjs-dist v5 que requieren el campo `canvas` en `RenderParameters`
 
 ### `area-chat.tsx` - Contenedor de mensajes
 
@@ -228,6 +301,15 @@ El `MutationObserver` del hook se encarga del auto-scroll durante el streaming d
 **Sentinel div:**
 
 Despues del ultimo mensaje siempre existe un `<div className="min-h-4 shrink-0">`. Garantiza 16px de espacio en blanco al final de la lista, evitando que el indicador de tres puntos o el cursor parpadeante queden pegados al borde inferior del contenedor con scroll.
+
+**Agrupacion de mensajes por remitente:**
+
+Los mensajes consecutivos del mismo rol se agrupan visualmente con gaps reducidos. En vez de un `space-y-6` estatico, se usan clases dinamicas por mensaje:
+- Primer mensaje (`indice === 0`): sin margen
+- Mismo remitente que el anterior: `mt-1.5` (6px, grupo visual compacto)
+- Diferente remitente: `mt-6` (24px, separacion clara entre turnos)
+
+Esto se calcula comparando `mensaje.rol` con `mensajeAnterior.rol` en el `.map()` de renderizado.
 
 **Padding del contenedor de mensajes:**
 
@@ -277,10 +359,21 @@ Captura tokens con al menos un `^{...}` o `_{...}` (con llaves). El patron de ll
 ### `bloque-codigo.tsx` - Syntax Highlighting
 
 Usa `react-syntax-highlighter` con PrismLight para:
-- Resaltado de 30+ lenguajes de programacion
-- Tema `oneDark`
+- Resaltado de 65+ lenguajes de programacion (incluyendo C/C++, Rust, Go, SQL, Docker, YAML, GraphQL, MATLAB, etc.)
+- Tema `oneDark` (colores de sintaxis intactos)
 - Boton de copiar con retroalimentacion visual
 - Etiqueta del lenguaje en la barra superior
+
+**Colores neutrales del contenedor (adaptados al tema blanco/negro):**
+
+| Elemento | Color | Descripcion |
+|----------|-------|-------------|
+| Fondo del codigo | `#1e1e1e` | Gris neutro puro oscuro (estilo VSCode), sin tinte azulado |
+| Barra superior | `#171717` | Casi negro neutro (etiqueta de lenguaje + boton copiar) |
+| Borde del contenedor | `#2e2e2e` | Gris neutro oscuro, sin tinte de Tailwind gray-700 |
+| Fondo de tokens (`<code/>`) | `transparent` | Anula el fondo heredado (`#282c34`) para evitar "remarcados" en el texto |
+
+Estos colores reemplazan los anteriores (`#282c34`, `#1e1e2e`, `#374151`) que tenian tintes azulados/morados heredados de los temas One Dark y Catppuccin, rompiendo la coherencia del tema monocromo. El fondo de las etiquetas `<code>` internas es forzado a ser transparente mediante la variante `[&_code]:!bg-transparent` de Tailwind.
 
 ---
 
@@ -327,7 +420,7 @@ data: [FIN]
 - Herramienta de busqueda web habilitada por defecto
 - Reasoning habilitado para modelos con `tieneReasoning: true` (definido en `modelos.ts`)
 - `max_output_tokens: 4096`
-- **System prompt para formateo matematico** (`INSTRUCCIONES_SISTEMA`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, incluyendo subscripts bare (`$h_t$`, `$C_{out}$`), superscripts (`$W^{(l)}$`), y comandos LaTeX (`$\to$`, `$\times$`, `$\sigma$`). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
+- **System prompt para formateo matematico, estructura de respuesta e idioma de razonamiento** (`INSTRUCCIONES_SISTEMA`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a: (1) usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, con display math (`$$`) en lineas separadas para formulas clave; (2) estructurar listas numeradas con titulo en **bold** seguido de linea en blanco antes de la explicacion; (3) usar headers para secciones largas; (4) razonar en el mismo idioma del usuario (español si el usuario escribe en español). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
 
 ### `POST /api/titulo` - Generacion de Titulos
 
@@ -493,32 +586,47 @@ Usado en: `area-chat.tsx`
 
 | Variable CSS | Color | Uso |
 |-------------|-------|-----|
-| `--color-claude-bg` | `#f3f0e8` | Fondo principal (crema) |
-| `--color-claude-sidebar` | `#ebe5d5` | Fondo del sidebar (beige) |
-| `--color-claude-sidebar-hover` | `#ddd7c7` | Hover en sidebar |
+| `--color-claude-bg` | `#ffffff` | Fondo principal (blanco puro) |
+| `--color-claude-sidebar` | `#f9f9f9` | Fondo del sidebar (gris casi blanco) |
+| `--color-claude-sidebar-hover` | `#f0f0f1` | Hover en sidebar |
 | `--color-claude-input` | `#ffffff` | Fondo de inputs |
-| `--color-claude-input-border` | `#d4cdbf` | Borde de inputs |
-| `--color-claude-texto` | `#2d2b28` | Texto principal (oscuro) |
-| `--color-claude-texto-secundario` | `#6b6560` | Texto secundario (gris) |
-| `--color-claude-acento` | `#d97757` | Color de acento (ocre/naranja) |
-| `--color-claude-acento-hover` | `#c4613f` | Hover del acento |
-| `--color-claude-usuario-burbuja` | `#ebe5d5` | Fondo burbuja del usuario |
+| `--color-claude-input-border` | `#e5e5e5` | Borde de inputs (gris neutro) |
+| `--color-claude-texto` | `#1a1a1a` | Texto principal (negro premium) |
+| `--color-claude-texto-secundario` | `#6b7280` | Texto secundario (gris neutro, Tailwind gray-500) |
+| `--color-claude-acento` | `#1a1a1a` | Color de acento (negro, botones de accion primarios) |
+| `--color-claude-acento-hover` | `#000000` | Hover del acento |
+| `--color-claude-usuario-burbuja` | `#f4f4f5` | Fondo burbuja del usuario (gris neutro claro, Tailwind zinc-100) |
+
+**Tokens de sombra (variables custom):**
+
+| Variable CSS | Valor | Uso |
+|-------------|-------|-----|
+| `--sombra-xs` | `0 1px 2px rgba(0,0,0,0.04)` | Sombra sutil para tarjetas y contenedores en reposo |
+| `--sombra-sm` | `0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)` | Hover en tarjetas de archivo |
+| `--sombra-md` | `0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -2px rgba(0,0,0,0.05)` | Elevacion media |
+| `--sombra-input-foco` | `0 0 0 1px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.06)` | Focus del input de mensajes |
+
+**Filosofia de tema:** El fondo principal es blanco puro (`#ffffff`) con sidebar apenas diferenciado (`#f9f9f9`), separado visualmente del area principal por un borde (`#e5e5e5`). La burbuja del usuario usa un gris neutro claro (`#f4f4f5`, Tailwind zinc-100) como fondo sutil sin tintes calidos. Bordes, scrollbars y separadores usan grises neutros puros para un aspecto limpio. El texto de las respuestas usa `#111111` (casi negro puro) para maximo contraste. Los colores de acento usan negro (`#1a1a1a`) para botones de accion primarios (enviar, detener), eliminando por completo el naranja del tema. Las tarjetas de archivo usan un diseno minimalista tipo chip con iconos grises por categoria.
 
 ### Tipografia
 
 - **Sans-serif:** Geist Sans (fuente principal)
 - **Monospace:** Geist Mono (bloques de codigo)
-- **Serif:** Instrument Serif (branding PenguinChat)
+- **Serif:** Instrument Serif (branding PenguinChat y encabezados h1/h2 en markdown)
 
 ### Animaciones CSS
 
 | Clase | Efecto |
 |-------|--------|
 | `.cursor-parpadeo` | Cursor parpadeante durante streaming |
-| `.punto-cargando` | Tres puntos que saltan (espera primer token del asistente); color `--color-claude-texto` para contraste sobre el fondo beige |
+| `.punto-cargando` | Tres puntos que saltan (espera primer token del asistente); color `--color-claude-texto` para contraste sobre fondo blanco |
 | `.icono-busqueda-pulsando` | Pulsacion del icono de busqueda web |
 | `.puntos-animados` | Secuencia "..." animada |
 | `.icono-pensamiento-girando` | Rotacion del spinner de reasoning |
+| `.burbuja-entrada` | Entrada suave para burbujas de mensaje (slide-up 6px en 250ms ease-out) |
+| `.edicion-entrada` | Transicion suave al modo edicion de mensajes (scale 0.98→1 en 200ms) |
+| `textarea:focus::placeholder` | Fade del placeholder al hacer focus (opacity 0.4 + translateX 4px) |
+| `.scrollbar-oculto` | Oculta scrollbar manteniendo scroll funcional (Firefox: `scrollbar-width: none`, Chrome: `::-webkit-scrollbar { display: none }`) |
 
 ### Estilos KaTeX (Formulas Matematicas)
 
@@ -527,11 +635,35 @@ Estilos personalizados dentro de `.prosa-markdown` para integrar KaTeX con el te
 | Selector | Efecto |
 |----------|--------|
 | `.katex` | Tamaño de fuente `1.05em` para legibilidad |
-| `.katex-display` | Scroll horizontal para formulas anchas, padding vertical |
+| `.katex-display` | `margin: 1.25em 0`, `padding: 0.5em 0` para formulas display centradas y prominentes. Scroll horizontal para formulas anchas |
+| `.katex-display > .katex` | Tamaño de fuente `1.15em` para que las formulas display destaquen sobre las inline |
 | `.katex-error` | Color secundario y tamaño reducido (errores tolerados) |
 | `.katex-html` | `white-space: nowrap` para evitar quiebres en formulas |
 
 La hoja de estilos de KaTeX (`katex/dist/katex.min.css`) se importa en `layout.tsx` para las fuentes matematicas.
+
+### Estilos de Prosa Markdown
+
+Los estilos de `.prosa-markdown` estan optimizados para legibilidad premium inspirados en Tailwind Typography (prose):
+
+| Propiedad | Valor | Referencia |
+|-----------|-------|------------|
+| `font-size` | `16px` | Prose base usa 16px (1rem) |
+| `line-height` | `1.75` | Prose recomienda 1.75 para texto de parrafo |
+| `color` | `#111111` | Negro casi puro para maximo contraste |
+| Marcadores (::marker) | `#1a1a1a` + `font-weight: 600` | Negro solido |
+| Margen entre `li` | `0.35em` | Compacto, estilo Claude |
+| Margen entre `p` | `0.75em` | Intermedio entre compacto y prose (0.5em → 0.75em) |
+| Listas `ul`/`ol` | `list-style-position: inside`, `padding-left: 0`, `margin-left: 0` | Sin indentacion en primer nivel (estilo Claude) |
+| `li > p` | `display: inline` | Parrafos fluyen con el marcador sin salto de linea |
+| `li > p + p` | `display: block` | Parrafos posteriores como bloque normal |
+| Sublistas `li > ul/ol` | `padding-left: 1.25em` | Indentacion solo para niveles anidados |
+| Enlaces | `color: #1a1a1a`, subrayado sutil | Oscuros con underline-offset |
+| Blockquotes | `border-left: #d1d5db` | Gris neutro (gray-300) |
+| Titulos bold en listas | `display: inline` | Fluyen con el marcador |
+| Encabezados h1, h2 | `font-family: var(--font-serif)`, `font-weight: 400`, `color: #0a0a0a` | Tipografia serif elegante (Instrument Serif) para jerarquia visual |
+| Encabezados h3-h6 | `font-weight: 600`, `color: #0a0a0a` | Sans-serif (Geist) para encabezados menores |
+| Codigo inline | `bg-[#f3f4f6]`, `color: #1a1a1a`, `font-medium` | Fondo gris neutro claro sobre blanco |
 
 ---
 
@@ -599,10 +731,19 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 19. **Nombre del modelo** visible junto a los botones de accion del asistente
 20. **Branding PenguinChat** con tipografia serif en la cabecera del sidebar
 21. **Tarjetas de citacion** con preview de YouTube y favicons
-22. **UI/UX moderna** estilo chat premium con tema ocre/beige
+22. **UI/UX moderna** estilo chat premium con tema blanco limpio, burbuja de usuario gris neutro, tipografia serif elegante en encabezados y tarjetas de archivo minimalistas tipo chip
 23. **Truncado fiable en sidebar** con cadena defensiva de overflow y workaround para Radix UI ScrollArea issue #926
 24. **Priorizacion de documentos recientes en RAG**: cuando el usuario adjunta un documento con su mensaje, los fragmentos de ese documento reciben un boost aditivo (+0.10) en la busqueda semantica, priorizandolos sobre documentos previamente indexados
 25. **Soporte de Jupyter Notebooks (.ipynb)**: parsing semantico de celdas (markdown, codigo con salidas, raw) con separadores inteligentes que combinan headings de markdown y bloques de Python
+26. **Tarjetas de archivo minimalistas** (`tarjeta-archivo.tsx`): componente reutilizable tipo chip con icono gris por categoria (FileText, FileCode, FileSpreadsheet), nombre truncado y extension en texto gris sutil, variante compacta (input) y expandida (burbuja), miniaturas compactas para imagenes y PDFs, boton eliminar en hover
+27. **Miniaturas de PDF** (`use-miniatura-pdf.ts`): hook que renderiza la pagina 1 de PDFs a canvas offscreen via pdfjs-dist. Usa un caché global `Map<string, string>` devolviendo URLs ligeros tipo `URL.createObjectURL(blob)` en lugar de DataURLs pesados, con limpieza automática (`revokeObjectURL`) al eliminar una conversación.
+28. **Agrupacion de mensajes por remitente**: mensajes consecutivos del mismo rol usan gap reducido (`mt-1.5` = 6px) vs gap normal entre roles diferentes (`mt-6` = 24px), creando agrupacion visual natural
+29. **Modo edicion premium**: al editar un mensaje del usuario, la burbuja se expande a ancho completo con bordes interactivos que coinciden con la barra de entrada principal, transicion instantanea, botones de cancelar/enviar estilizados
+30. **Avatar del asistente arriba del mensaje**: el SVG se posiciona encima del texto con `mb-3.5` de separacion, fuera del flujo flex del texto para que el contenido ocupe el ancho completo
+31. **Indicadores de estado junto al avatar (estilo Gemini)**: layout en flex-col con fila superior (avatar + `BotonPensamiento`), contenido expandido debajo (ancho completo con `border-l-2`), y busqueda web debajo del pensamiento. Los componentes `BotonPensamiento` y `ContenidoPensamiento` estan separados para permitir este layout
+32. **Listas sin indentacion (estilo Claude)**: `list-style-position: inside` + `padding-left: 0` + `li > p { display: inline }` para que las listas queden al ras del margen izquierdo sin indentacion en el primer nivel
+33. **Razonamiento en el idioma del usuario**: system prompt instruye al modelo a razonar y pensar en el mismo idioma que usa el usuario (español si pregunta en español)
+34. **Exclusión de archivos compilados en ESLint**: la carpeta `public/` fue ignorada vía `eslint.config.mjs` para evitar advertencias de variables no usadas producidas por librerías dependientes minificadas (como `pdf.worker.min.mjs`); manteniendo el proyecto en `0 warnings`.
 
 ---
 
@@ -624,7 +765,14 @@ Proveedor (ProveedorIA)
 - `components/ui/iconos-proveedor.tsx`: Iconos SVG por proveedor, extensibles via `MAPA_ICONOS`
 - `components/chat/entrada-mensaje.tsx`: Popover con panel de dos columnas (proveedores + modelos)
 
-**UI del selector:** El trigger muestra solo `Nombre Modelo ▼` (sin icono), posicionado a la derecha del input junto al boton de enviar. Al hacer click se abre un Popover (`align="end"`) con dos paneles:
+**Input de mensajes - Estilos premium:**
+
+El contenedor del input usa `overflow-hidden` para evitar scrollbars no deseados, con tokens de sombra custom:
+- En reposo: `shadow-[var(--sombra-xs)]` (sombra sutil) + `ring-1 ring-transparent` + `border border-[var(--color-claude-input-border)]`
+- En focus: `shadow-[var(--sombra-input-foco)]` (sombra multi-capa) + `ring-[var(--color-claude-texto)]/10` + `border-[var(--color-claude-texto)]`
+- Transicion `duration-200` para suavidad entre estados
+
+**UI del selector de modelos:** El trigger muestra solo `Nombre Modelo ▼` (sin icono), posicionado a la derecha del input junto al boton de enviar. Al hacer click se abre un Popover (`align="end"`) con dos paneles:
 - **Panel izquierdo (w-12):** Sidebar vertical con iconos de proveedores (boton por cada proveedor), el activo se resalta con fondo hover
 - **Panel derecho:** Lista de modelos agrupados por categoria del proveedor seleccionado, con check en el modelo activo
 
@@ -836,7 +984,7 @@ Almacen en memoria indexado por conversacion con persistencia en IndexedDB. Cada
 
 #### `extractor-texto.ts` - Extractor de Texto (Fallback)
 
-Extractor de texto para el pipeline fallback en hilo principal. Se carga via `await import("./extractor-texto")` solo cuando el Web Worker no esta disponible.
+Extractor de texto para el pipeline fallback en hilo principal. Se carga via `await import("./extractor-texto")` solo cuando el Web Worker no esta disponible. Importa `EXTENSIONES_SOPORTADAS` del registro centralizado para determinar compatibilidad.
 
 **Soporta:**
 - **Texto plano y codigo fuente** (~60 extensiones: `.ts`, `.tsx`, `.js`, `.py`, `.go`, `.rs`, `.java`, `.cpp`, `.rb`, `.php`, `.css`, `.html`, `.yaml`, `.sql`, `.graphql`, `.prisma`, y muchas mas): decodifica base64 a UTF-8. Usa el registro centralizado de `separadores-codigo.ts` para determinar compatibilidad

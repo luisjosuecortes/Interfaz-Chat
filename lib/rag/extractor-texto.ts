@@ -2,6 +2,8 @@
 // Soporta: archivos de texto plano y PDF (via pdfjs-dist local)
 // Todo se ejecuta en el navegador, sin servidor
 
+import { EXTENSIONES_SOPORTADAS } from "./separadores-codigo"
+
 // Resultado de la extraccion
 interface ResultadoExtraccion {
   exito: boolean
@@ -12,11 +14,6 @@ interface ResultadoExtraccion {
     caracteres: number
   }
 }
-
-// Extensiones que se tratan como texto plano
-const EXTENSIONES_TEXTO = new Set([
-  ".txt", ".md", ".csv", ".json", ".xml", ".html", ".css", ".js", ".ts", ".py",
-])
 
 // Prefijos MIME que son texto
 const PREFIJOS_MIME_TEXTO = ["text/", "application/json", "application/xml"]
@@ -58,7 +55,7 @@ export async function extraerTextoDeArchivo(
 function esArchivoTexto(tipoMime: string, nombre: string): boolean {
   const extension = nombre.toLowerCase().slice(nombre.lastIndexOf("."))
   return (
-    EXTENSIONES_TEXTO.has(extension) ||
+    EXTENSIONES_SOPORTADAS.has(extension) ||
     PREFIJOS_MIME_TEXTO.some((prefijo) => tipoMime.startsWith(prefijo))
   )
 }

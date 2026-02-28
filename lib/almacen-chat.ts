@@ -59,6 +59,12 @@ const acciones: AccionesChat = {
   },
 
   eliminarConversacion: (id: string) => {
+    // Importamos dinámicamente para evitar dependencias circulares y mantenemos el store ligero
+    import("./use-miniatura-pdf").then(({ limpiarCacheMiniaturaPDF }) => {
+      const conv = estado.conversaciones.find(c => c.id === id)
+      conv?.mensajes.forEach(m => m.adjuntos?.forEach(a => limpiarCacheMiniaturaPDF(a.id)))
+    })
+
     establecerEstado((previo) => {
       const conversacionesFiltradas = previo.conversaciones.filter((c) => c.id !== id)
       const nuevaActiva =
