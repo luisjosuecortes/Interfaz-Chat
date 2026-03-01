@@ -105,10 +105,27 @@ export async function POST(solicitud: Request) {
       input: entradaMensajes,
       stream: true,
       max_output_tokens: maxTokensSalida,
-      tools: [{
-        type: "web_search" as const,
-        search_context_size: "medium" as const,
-      }],
+      tools: [
+        {
+          type: "web_search" as const,
+          search_context_size: "medium" as const,
+        },
+        {
+          type: "function" as const,
+          name: "ejecutar_codigo",
+          description: "Ejecuta codigo Python o JavaScript en el navegador del usuario y retorna la salida. Usa esto para verificar calculos, probar logica, analizar datos o generar resultados. El codigo se ejecuta localmente via Pyodide (Python) o iframe sandboxed (JavaScript). Timeout: 10 segundos.",
+          parameters: {
+            type: "object" as const,
+            properties: {
+              lenguaje: { type: "string" as const, enum: ["python", "javascript"], description: "Lenguaje del codigo a ejecutar" },
+              codigo: { type: "string" as const, description: "El codigo fuente a ejecutar" },
+            },
+            required: ["lenguaje", "codigo"],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ],
       include: ["web_search_call.action.sources"],
       ...(soportaReasoning && {
         reasoning: {
@@ -122,6 +139,7 @@ export async function POST(solicitud: Request) {
     const flujoLectura = new ReadableStream({
       async start(controlador) {
         const codificador = new TextEncoder()
+        let idRespuesta = "" // Se captura al crear la respuesta
 
         function enviarEvento(datos: Record<string, unknown>) {
           controlador.enqueue(
@@ -131,6 +149,11 @@ export async function POST(solicitud: Request) {
 
         try {
           for await (const evento of respuestaStream) {
+            // Capturar el ID de respuesta al iniciar
+            if (evento.type === "response.created") {
+              const resp = (evento as unknown as Record<string, { id?: string }>).response
+              if (resp?.id) idRespuesta = resp.id
+            }
             // === Eventos de Reasoning/Pensamiento ===
 
             // Inicio de resumen de razonamiento
@@ -165,9 +188,11 @@ export async function POST(solicitud: Request) {
               enviarEvento({ tipo: "busqueda_completada" })
             }
 
-            // Item de output completado (puede ser web_search_call con resultados)
+            // Item de output completado (puede ser web_search_call o function_call)
             if (evento.type === "response.output_item.done") {
               const item = evento.item as unknown as Record<string, unknown>
+
+              // Busqueda web completada: extraer consultas y fuentes
               if (item.type === "web_search_call") {
                 const accion = item.action as Record<string, unknown> | undefined
                 const consultas: string[] = []
@@ -195,6 +220,22 @@ export async function POST(solicitud: Request) {
                   consultas,
                   fuentes,
                 })
+              }
+
+              // Function calling completado: enviar tool_call con todos los campos
+              // NOTA: response.function_call_arguments.done NO tiene name ni call_id,
+              // solo arguments e item_id. Los campos completos estan en el item aqui.
+              if (item.type === "function_call") {
+                enviarEvento({
+                  tipo: "tool_call",
+                  nombre: item.name ?? "",
+                  argumentos: item.arguments ?? "{}",
+                  callId: item.call_id ?? "",
+                  idRespuesta,
+                })
+                controlador.enqueue(codificador.encode("data: [FIN]\n\n"))
+                controlador.close()
+                return
               }
             }
 

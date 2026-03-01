@@ -2,7 +2,7 @@
 
 ## Descripcion General
 
-PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales, artefactos con panel lateral (codigo, HTML, SVG) y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
+PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales, artefactos con panel lateral (codigo, HTML, SVG), ejecucion local de codigo (JavaScript via iframe sandboxed, Python via Pyodide WASM con cache persistente), herramienta de ejecucion via function calling (el modelo puede invocar `ejecutar_codigo` y recibir resultados) y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
 
 ---
 
@@ -13,7 +13,9 @@ chatslm/
 ├── app/                          # App Router de Next.js
 │   ├── api/                      # Rutas de API (Server-side)
 │   │   ├── chat/
-│   │   │   └── route.ts          # API de streaming para chat con OpenAI
+│   │   │   ├── route.ts          # API de streaming para chat con OpenAI (con function calling)
+│   │   │   └── continuar/
+│   │   │       └── route.ts      # API para continuar respuesta tras tool call (ejecutar_codigo)
 │   │   └── titulo/
 │   │       └── route.ts          # API para generar titulos de conversaciones
 │   ├── globals.css               # Estilos globales, tema y animaciones
@@ -24,7 +26,7 @@ chatslm/
 │   ├── chat/                     # Componentes especificos del chat
 │   │   ├── area-chat.tsx         # Area de mensajes con auto-scroll inteligente, titulo flotante y boton de sidebar
 │   │   ├── barra-lateral.tsx     # Sidebar con branding "PenguinChat" (tipografia serif), lista de conversaciones y CSS visibility (sin render condicional)
-│   │   ├── bloque-codigo.tsx     # Bloque de codigo con syntax highlighting y deteccion de artefactos
+│   ├── bloque-codigo.tsx     # Bloque de codigo con syntax highlighting, deteccion de artefactos y boton Ejecutar
 │   │   ├── burbuja-mensaje.tsx   # Mensaje individual (usuario/asistente)
 │   │   ├── contenedor-chat.tsx   # Componente orquestador principal (layout split chat + artefacto + drag-and-drop global)
 │   │   ├── entrada-mensaje.tsx   # Input con selector de modelos, adjuntos, paste (Ctrl+V), drag-and-drop y limite de 10 adjuntos
@@ -32,7 +34,7 @@ chatslm/
 │   │   ├── indicador-pensamiento.tsx # Boton + contenido expandido de reasoning (separados para layout flex)
 │   │   ├── indicador-rag.tsx     # Indicador de estado de documentos RAG
 │   │   ├── lightbox-imagen.tsx   # Lightbox modal para ver imagenes en grande (React portal)
-│   │   ├── panel-artefacto.tsx   # Panel lateral para visualizar y editar artefactos (editor overlay con syntax highlighting)
+│   │   ├── panel-artefacto.tsx   # Panel lateral para visualizar, editar y ejecutar artefactos (editor overlay, consola de resultados)
 │   │   ├── pantalla-inicio.tsx   # Pantalla inicial de bienvenida
 │   │   ├── renderizador-markdown.tsx # Procesador de Markdown con pipeline LaTeX de 5 pasos
 │   │   ├── tarjeta-archivo.tsx     # Tarjeta de archivo con miniatura PDF, click-to-lightbox para imagenes
@@ -57,9 +59,10 @@ chatslm/
 │   │   └── procesador-rag.ts     # Orquestador RAG (delega al motor)
 │   ├── use-miniatura-pdf.ts       # Hook para generar miniaturas de PDFs (pdfjs-dist, cache global)
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
-│   ├── cliente-chat.ts           # Cliente de streaming para la API
-│   ├── constantes.ts             # Constantes compartidas cliente/servidor (INSTRUCCIONES_SISTEMA)
-│   ├── contexto-artefacto.tsx    # React Context para el sistema de artefactos (panel lateral)
+│   ├── cliente-chat.ts           # Cliente de streaming para la API (con soporte tool calling)
+│   ├── constantes.ts             # Constantes compartidas cliente/servidor (INSTRUCCIONES_SISTEMA con CODE EXECUTION)
+│   ├── contexto-artefacto.tsx    # React Context para artefactos + estado de ejecucion de codigo
+│   ├── ejecutor-codigo.ts        # Motor de ejecucion local: JS (iframe sandbox) + Python (Pyodide WASM + Cache API)
 │   ├── hooks.ts                  # Hooks personalizados reutilizables
 │   ├── modelos.ts                # Catalogo de modelos y proveedores de IA (con ventanaContexto/maxTokensSalida)
 │   ├── preprocesar-imagen.ts     # Preprocesamiento de imagenes (resize + compress con Canvas API)
@@ -157,6 +160,15 @@ Usuario escribe → EntradaMensaje → ContenedorChat.manejarEnvio()
     │       │           ├── Eventos de busqueda   → actualizarBusqueda
     │       │           ├── Deltas de texto        → actualizarUltimoMensaje
     │       │           ├── Citaciones             → agregarCitacion
+    │       │           ├── Tool call (ejecutar_codigo) → manejarToolCall:
+    │       │           │     1. Parsea argumentos {lenguaje, codigo}
+    │       │           │     2. Inserta bloque de codigo en el texto del asistente
+    │       │           │     3. Muestra indicador de progreso "*Ejecutando codigo...*"
+    │       │           │     4. ejecutarCodigo() localmente (iframe/Pyodide)
+    │       │           │     5. Muestra resultado formateado al usuario en el chat
+    │       │           │     6. POST /api/chat/continuar → envia resultado al modelo
+    │       │           │     7. Procesa nuevo stream de continuacion
+    │       │           │     8. Soporta encadenamiento recursivo (max 5 niveles)
     │       │           └── [FIN]                  → alFinalizar
     │       │
     │       └── Si es primer mensaje → generarTituloConversacion()
@@ -189,6 +201,7 @@ El componente raiz de la aplicacion. Gestiona:
 - **Inyeccion de contexto RAG** (`obtenerContenidoConContextoRAG`): busca fragmentos relevantes y los prepende al mensaje
 - **Truncamiento de historial** (`truncarHistorial`): recorta pares completos de mensajes (usuario+asistente) cuando el historial excede el presupuesto dinamico del modelo (conteo real via `gpt-tokenizer`, encoding o200k_base, con `allowedSpecial: 'all'` para tolerar tokens especiales literales en el contenido). El presupuesto se calcula como: `ventanaContexto - maxTokensSalida - tokensSystemPrompt - tokensRAG - margenSeguridad(512)`. Cache FIFO de 500 entradas para evitar recontar. El system prompt se cuenta una sola vez (`tokensSystemPromptCache`)
 - **Drag-and-drop global** (`manejarDragOverGlobal`, `manejarDropGlobal`): handlers en el div raiz que permiten arrastrar archivos desde el explorador de archivos a cualquier parte de la pagina. Los archivos dropeados se pasan a `EntradaMensaje` via props `archivosExternos` / `alLimpiarArchivosExternos`. Un overlay visual con borde punteado (`fixed inset-0 z-50 pointer-events-none`) indica la zona de drop activa
+- **Orquestacion de tool calls** (`manejarToolCall`): funcion anidada dentro de `enviarConsultaAlModelo` que gestiona el ciclo de vida completo de las invocaciones de herramientas del modelo. Cuando el modelo emite un tool call `ejecutar_codigo`, el handler: (1) parsea argumentos JSON `{lenguaje, codigo}`, (2) inserta el bloque de codigo como markdown en `textoRespuestaFinal`, (3) muestra indicador de progreso inline ("*Ejecutando codigo Python/JavaScript...*") visible al usuario, (4) ejecuta localmente via `ejecutarCodigo()`, (5) muestra el resultado formateado al usuario en el chat ("**Resultado:**" o "**Error de ejecucion:**" con bloque de codigo), (6) formatea resultado como texto para el modelo, (7) llama `enviarContinuacionConStreaming()` que envia el resultado al modelo via `/api/chat/continuar` y procesa el nuevo stream. Gestiona correctamente el texto acumulado (`ultimoTextoContinuacion`) para no perder contenido entre el texto principal y la continuacion. Soporta encadenamiento recursivo con limite de profundidad (`MAX_TOOL_CALLS_ENCADENADOS = 5`): si el modelo hace otro tool call tras recibir el resultado, `alToolCall` del callback fusiona el texto acumulado y llama a `manejarToolCall` con `profundidad + 1`. Al alcanzar el limite, inserta un mensaje informativo y finaliza. Los callbacks `alFinalizar` y `alError` de la continuacion manejan la limpieza del estado (`estaEscribiendo`, `referenciaControlador`, titulo). El catch block muestra errores especificos en vez de genericos
 
 **Layout del area principal:**
 
@@ -224,13 +237,35 @@ Store implementado con `useSyncExternalStore` de React 19, sin dependencias exte
 
 ### `cliente-chat.ts` - Cliente de Streaming
 
-Funcion `enviarMensajeConStreaming()` que:
+Dos funciones principales para comunicacion con el backend via SSE:
+
+**`enviarMensajeConStreaming()`** - Flujo principal:
 - Envia peticion POST a `/api/chat`
 - Lee el stream con `ReadableStream` y `TextDecoder`
 - Parsea eventos SSE (Server-Sent Events) linea por linea
 - Maneja buffer incompleto para chunks parciales
 - **Flush del buffer residual**: al terminar el stream (`done = true`), procesa cualquier dato restante en `bufferIncompleto` que no termine con `\n`. Esto previene perdida silenciosa del final de la respuesta cuando el ultimo chunk del servidor no termina con salto de linea
-- Despacha callbacks tipados: `alActualizar`, `alBusquedaIniciada`, `alCitacion`, etc.
+- Despacha callbacks tipados: `alActualizar`, `alBusquedaIniciada`, `alCitacion`, `alPensamientoIniciado`, `alPensamientoDelta`, `alPensamientoCompletado`, `alToolCall`
+- **Manejo de tool calls**: cuando el evento es `tipo: "tool_call"`, despacha `alToolCall(nombre, argumentos, callId, idRespuesta)` y ejecuta `return` inmediatamente. Si algun campo falta, emite `console.warn` para depuracion en vez de ignorar silenciosamente. Esto evita que el `[FIN]` posterior sea procesado por el loop — el handler del tool call (`manejarToolCall` en `contenedor-chat.tsx`) gestiona el ciclo de vida completo incluyendo finalizacion
+
+**`enviarContinuacionConStreaming()`** - Continuacion tras tool call:
+- Envia resultado de tool call a `/api/chat/continuar` via POST
+- Mismo patron de parsing SSE que la funcion principal
+- Callbacks reducidos: `alActualizar`, `alFinalizar`, `alError`, `alToolCall`
+- Soporta encadenamiento: si el modelo hace otro tool call durante la continuacion, lo despacha via `alToolCall` y ejecuta `return` (el handler recursivo se encarga)
+
+**Protocolo SSE de eventos:**
+
+| Evento | Formato | Handler |
+|--------|---------|---------|
+| Texto | `{"contenido": "..."}` | `alActualizar` (acumula) |
+| Busqueda web | `{"tipo": "busqueda_iniciada"}` | `alBusquedaIniciada` |
+| Busqueda resultado | `{"tipo": "busqueda_resultado", "consultas": [...], "fuentes": [...]}` | `alBusquedaResultado` |
+| Citacion | `{"tipo": "citacion", "citacion": {...}}` | `alCitacion` |
+| Pensamiento | `{"tipo": "pensamiento_iniciado"}` | `alPensamientoIniciado` |
+| Pensamiento delta | `{"tipo": "pensamiento_delta", "delta": "..."}` | `alPensamientoDelta` |
+| Tool call | `{"tipo": "tool_call", "nombre": "...", "argumentos": "...", "callId": "...", "idRespuesta": "..."}` | `alToolCall` |
+| Fin | `[FIN]` | `alFinalizar` |
 
 ### `burbuja-mensaje.tsx` - Mensaje Individual
 
@@ -362,7 +397,7 @@ Hook que genera una miniatura de la primera pagina de un PDF.
 
 ### `area-chat.tsx` - Contenedor de mensajes
 
-Usa un `<div>` nativo con scroll via `useScrollAlFondo()` para control total durante streaming.
+Usa un `<div>` nativo con scroll via `useScrollAlFondo()` para control total durante streaming. El titulo flotante de la conversacion se oculta automaticamente (`lg:opacity-0 lg:pointer-events-none` con `transition-opacity duration-200`) cuando el panel de artefactos esta abierto, evitando solapamiento visual. Lee `artefactoActivo` de `useArtefacto()`.
 
 **Logica de scroll (2 efectos):**
 - `useEffect([conversacion.id])`: scroll instantaneo al cambiar de conversacion
@@ -443,6 +478,14 @@ Componente dual: renderiza bloques de codigo con syntax highlighting y detecta a
 | `BloqueCodigoConResaltado` | Componente principal: si el codigo califica como artefacto, muestra `TarjetaArtefacto`; si no, muestra el bloque inline con tema claro (`oneLight`), barra superior y boton copiar |
 | `CodigoConResaltado` | Componente para el panel de artefactos: tema claro (`oneLight`) con fondo transparente (delegado al contenedor `--color-claude-sidebar`) y `overflow: "visible"` para delegar scroll al contenedor exterior. Sin cabecera ni deteccion |
 
+**Componentes internos:**
+
+| Componente | Descripcion |
+|------------|-------------|
+| `TarjetaArtefacto` | Tarjeta clickable que sustituye al bloque de codigo en el chat para artefactos (>=25 lineas, SVG, HTML, LaTeX) |
+| `TarjetaEjecucion` | Tarjeta neutral para bloques ejecutados por el modelo (marcador `@ejecutado-por-modelo`). Misma estructura visual que `TarjetaArtefacto`, con punto de color sutil para estado y soporte para `resultadoPrevio` |
+| `IndicadorEjecucion` | Tarjeta animada durante ejecucion de tool calls (pseudo-lenguaje `ejecutando:*`). Icono Terminal pulsante + dots animados (`.punto-cargando`) |
+
 **Constantes exportadas:**
 
 | Constante | Descripcion |
@@ -470,10 +513,22 @@ El umbral de 25 lineas se eligio para deteccion puramente frontend (sin intencio
 | `determinarTipo(lenguaje, codigo)` | Clasifica en `"svg"`, `"html"`, `"markdown"` o `"codigo"` |
 | `inferirTitulo(codigo, lenguaje)` | Busca nombre de archivo en comentarios de la primera linea (`// app.tsx`, `# main.py`, `<!-- index.html -->`). Fallback: nombre del lenguaje |
 
+**Boton Ejecutar (lenguajes ejecutables):**
+
+Para lenguajes ejecutables (JavaScript, TypeScript, Python), el bloque inline muestra un boton "Ejecutar" (icono `Play`) en la barra superior, junto al boton de copiar. El handler `manejarEjecutarEnArtefacto` usa `abrirYEjecutarArtefacto()` del contexto (operacion atomica que recibe el artefacto como parametro y ejecuta directamente sin depender del estado de React, eliminando race conditions). Para artefactos (>=25 lineas), la ejecucion se maneja directamente desde el boton Ejecutar del `PanelArtefacto`. Para Python, si `validarImportsPython()` detecta imports no disponibles en Pyodide, el boton se oculta.
+
+**Regla de hooks**: TODOS los hooks (`useCopiarAlPortapapeles`, `useArtefacto`, `useMensaje`, `useCallback`, `useState`, 2x `useEffect`) se llaman incondicionalmente antes de cualquier early return. Esto previene el error "Rendered fewer hooks than expected" que ocurre cuando un early return condicional (ej: check de marcador `@ejecutado-por-modelo`) salta hooks que ya se habian ejecutado en renders previos.
+
 **Flujo de deteccion:**
 
 ```
 BloqueCodigoConResaltado recibe {codigo, lenguaje}
+    │
+    ├── [HOOKS: todos los hooks se ejecutan incondicionalmente]
+    │
+    ├── ¿lenguaje.startsWith("ejecutando:")? → IndicadorEjecucion (tarjeta animada)
+    │
+    ├── ¿Primera linea es @ejecutado-por-modelo? → TarjetaEjecucion (tarjeta neutral con resultadoPrevio)
     │
     ├── ¿deshabilitarArtefacto? → renderizar bloque inline
     │
@@ -485,7 +540,8 @@ BloqueCodigoConResaltado recibe {codigo, lenguaje}
     │       │         └── onClick → abrirArtefacto({id, tipo, titulo, contenido, lenguaje, totalLineas})
     │       │                        └── PanelArtefacto se abre via React Context
     │       │
-    │       └── No → Bloque inline (barra superior + syntax highlighting + boton copiar)
+    │       └── No → Bloque inline (barra superior + syntax highlighting + boton copiar + boton ejecutar?)
+    │                  └── Si esLenguajeEjecutable(lenguaje) → boton Ejecutar abre panel y ejecuta
     │
     └── Sync en tiempo real: useEffect detecta si el panel muestra este artefacto
         (comparando artefactoActivo.id con idArtefacto) y actualiza el contenido
@@ -526,17 +582,21 @@ Panel lateral que visualiza y edita artefactos (codigo, HTML, SVG, markdown, LaT
 **Estructura:**
 
 ```
-┌─────────────────────────────────────┐
-│  Titulo     Lang · N lineas  [✎][⊞][↓][×] │  ← Cabecera fija (fondo blanco)
-├─────────────────────────────────────┤
-│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
-│░ Modo codigo: CodigoConResaltado   ░│  ← Fondo claro #f9f9f9 en el
-│░ Modo preview: VistaPreviaArtefacto░│     contenedor scrollable (flex-1),
-│░  o RenderizadorMarkdown           ░│     llena toda la altura disponible
-│░ Modo edicion: overlay (textarea   ░│
-│░  transparente + resaltado)        ░│
-│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  Titulo     Lang · N lineas  [▶][✎][⊞][↓][×]   │  ← Cabecera fija (fondo blanco)
+├─────────────────────────────────────────────────┤
+│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+│░ Modo codigo: CodigoConResaltado               ░│  ← Fondo claro #f9f9f9 en el
+│░ Modo preview: VistaPreviaArtefacto            ░│     contenedor scrollable (flex-1),
+│░  o RenderizadorMarkdown                       ░│     llena toda la altura disponible
+│░ Modo edicion: overlay (textarea               ░│
+│░  transparente + resaltado)                    ░│
+│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+├─────────────────────────────────────────────────┤
+│ ● Completado  42ms                    [▼]       │  ← ConsolaResultados (si hay resultado)
+│ console.log output...                           │     Tema claro, max-h-48, colapsable
+│ => resultado final                              │
+└─────────────────────────────────────────────────┘
 ```
 
 **Modos de visualizacion (3):**
@@ -612,6 +672,7 @@ Convertidor ligero de 11 pasos que transforma la estructura de un documento LaTe
 
 | Boton | Icono | Descripcion |
 |-------|-------|-------------|
+| Ejecutar | `Play` (verde) / `Loader2` (spinner) | Ejecuta el codigo del artefacto via `ejecutarArtefacto()`. Solo visible para lenguajes ejecutables (JS/TS/Python). Deshabilitado durante ejecucion |
 | Editar / Editando | `Pencil` | Toggle modo edicion (todos los tipos). Se oculta Preview/Codigo durante edicion |
 | Vista previa / Codigo | `Eye` / `Code2` | Toggle entre codigo y preview (solo tipos con preview, no en modo edicion) |
 | Copiar | `Copy` / `Check` | Copia el contenido completo al portapapeles con retroalimentacion visual (2s) |
@@ -643,9 +704,33 @@ Crea un `Blob` con el contenido, genera `ObjectURL`, crea un enlace `<a>` tempor
 
 **Animacion de entrada:** Clase `.animate-entrada-panel` (CSS keyframe `entrada-panel`): slide-in desde la derecha (translateX 16px → 0) con fade (opacity 0 → 1) en 200ms ease-out.
 
-### `contexto-artefacto.tsx` - React Context para Artefactos
+**`ConsolaResultados` (sub-componente):**
 
-Contexto de React que permite comunicacion entre `BloqueCodigoConResaltado` (emisor) y `ContenedorChat`/`PanelArtefacto` (receptores) sin prop drilling.
+Panel de resultados de ejecucion de codigo con tema claro, posicionado en la parte inferior del panel sobre un divisor (`border-t`):
+
+- **Barra de estado/toggle**: boton clickable que muestra estado (Cargando Python.../Ejecutando.../Completado/Error/Timeout) con icono animado (`Loader2 animate-spin` durante ejecucion, `●` coloreado despues). Incluye duracion en ms y chevron de toggle (`ChevronDown`/`ChevronUp`)
+- **Salidas**: area scrollable con `max-h-48 overflow-y-auto`, font mono `text-xs`
+- **Colores por tipo de salida (tema claro)**:
+
+| Tipo | Clase CSS | Color |
+|------|-----------|-------|
+| `stdout` | `text-[var(--color-claude-texto)]` | Negro/gris oscuro |
+| `stderr` | `text-amber-600` | Ambar |
+| `resultado` | `text-emerald-600` | Verde |
+| `error` | `text-red-600` | Rojo |
+| `imagen` | — | Renderizado como `<img>` |
+
+- Los resultados se prefijan con `=> ` y los stderr con `stderr: `
+- **Imagenes matplotlib**: las salidas tipo `"imagen"` se renderizan como `<img src={dataURL}>` con `max-w-full rounded my-1` y max-height 400px, permitiendo visualizar graficos generados por matplotlib/savefig
+- **Auto-scroll**: `useEffect` que hace `scrollTop = scrollHeight` al cambiar `resultado.salidas.length`
+- **Colapsable**: toggle abrir/cerrar via la barra de estado
+- **Visibilidad**: solo se muestra si hay ejecucion activa o hay salida (`estaActiva || tieneSalida`)
+- Fondo `bg-[var(--color-claude-sidebar)]` con hover en la barra, consistente con el tema claro del panel
+- **Espacio compacto**: `py-1.5 leading-snug` para minimizar espacio muerto entre lineas de salida
+
+### `contexto-artefacto.tsx` - React Context para Artefactos y Ejecucion
+
+Contexto de React que permite comunicacion entre `BloqueCodigoConResaltado` (emisor) y `ContenedorChat`/`PanelArtefacto` (receptores) sin prop drilling. Tambien gestiona el estado de ejecucion de codigo del artefacto activo.
 
 **Patron:**
 
@@ -653,8 +738,9 @@ Contexto de React que permite comunicacion entre `BloqueCodigoConResaltado` (emi
 ProveedorArtefacto (page.tsx)
     ├── ContenedorChat → useArtefacto() → lee artefactoActivo para layout split
     │   ├── AreaChat → BurbujaMensaje → RenderizadorMarkdown → BloqueCodigoConResaltado
-    │   │                                                        └── useArtefacto() → abrirArtefacto()
-    │   └── PanelArtefacto → useArtefacto() → lee artefactoActivo para contenido
+    │   │                                                        └── useArtefacto() → abrirArtefacto() / ejecutarArtefacto()
+    │   └── PanelArtefacto → useArtefacto() → lee artefactoActivo + estadoEjecucion + resultadoEjecucion
+    └── ContenedorChat → useArtefacto() → abrirYEjecutarArtefacto() (tool calls del modelo)
     └── (cualquier componente hijo puede usar useArtefacto())
 ```
 
@@ -664,15 +750,92 @@ ProveedorArtefacto (page.tsx)
 |-----------|------|-------------|
 | `estaDisponible` | `boolean` | `true` si `ProveedorArtefacto` esta montado. Evita que `BloqueCodigoConResaltado` intente renderizar tarjetas fuera del contexto |
 | `artefactoActivo` | `Artefacto \| null` | Artefacto visible en el panel (`null` = panel cerrado) |
-| `abrirArtefacto` | `(artefacto: Artefacto) => void` | Abre el panel con el artefacto dado. Estable via `useCallback` |
-| `cerrarArtefacto` | `() => void` | Cierra el panel (`null`). Estable via `useCallback` |
-| `actualizarContenidoArtefacto` | `(nuevoContenido: string, totalLineas: number) => void` | Actualiza el contenido del artefacto activo durante streaming. Usa `setState` funcional para evitar re-renders si el contenido no cambio. Estable via `useCallback` |
+| `editadoPorUsuario` | `boolean` | `true` si el usuario edito el contenido manualmente. Evita que el sync de streaming revierta las ediciones |
+| `abrirArtefacto` | `(artefacto: Artefacto) => void` | Abre el panel con el artefacto dado. Limpia estado de ejecucion y edicion. Estable via `useCallback` |
+| `cerrarArtefacto` | `() => void` | Cierra el panel (`null`). Limpia todo el estado. Estable via `useCallback` |
+| `actualizarContenidoArtefacto` | `(nuevoContenido: string, totalLineas: number) => void` | Actualiza el contenido del artefacto activo durante streaming. NO marca como editado. Usa `setState` funcional para evitar re-renders si el contenido no cambio. Estable via `useCallback` |
+| `guardarEdicionUsuario` | `(nuevoContenido: string, totalLineas: number) => void` | Guarda ediciones del usuario y marca `editadoPorUsuario = true` para que el sync de streaming no las revierta |
+| `estadoEjecucion` | `EstadoEjecucion` | Estado actual: `"inactivo"` \| `"cargando"` \| `"ejecutando"` \| `"completado"` \| `"error"` |
+| `resultadoEjecucion` | `ResultadoEjecucion \| null` | Resultado de la ultima ejecucion (salidas, exito, duracion) |
+| `ejecutarArtefacto` | `() => Promise<void>` | Ejecuta el codigo del artefacto activo usando `ejecutarCodigo()` del motor local. Lee contenido y lenguaje actuales (incluyendo ediciones). Determina estado inicial segun si Pyodide necesita cargarse |
+| `abrirYEjecutarArtefacto` | `(artefacto: Artefacto) => Promise<ResultadoEjecucion \| null>` | Operacion atomica: abre el artefacto en el panel Y ejecuta su codigo. Usa `refEjecucionExterna` para proteger contra interferencia del auto-open de `bloque-codigo.tsx`. Retorna el resultado de la ejecucion (o `null` si falla). Usado por `manejarToolCall` en `contenedor-chat.tsx` |
 
 **Decisiones de diseno:**
 
 - **React Context vs Store global**: Se usa Context en vez de modificar `almacen-chat.ts` porque el artefacto es estado de UI transiente (no se persiste, no afecta mensajes). Evita re-renders innecesarios del store que maneja conversaciones.
 - **`estaDisponible` flag**: Permite que `BloqueCodigoConResaltado` funcione sin el Provider (ej: en tests o previews aislados). El valor por defecto del contexto tiene `estaDisponible: false`, asi que sin Provider no se muestran tarjetas.
 - **Callbacks estables**: `abrirArtefacto` y `cerrarArtefacto` usan `useCallback` con dependencias vacias para evitar re-renders de consumers.
+- **Guard por ID en `abrirArtefacto`**: usa `setState(prev => ...)` funcional para comparar `prev?.id === artefacto.id` y retornar `prev` sin cambios si es el mismo artefacto. Esto evita re-renders innecesarios durante streaming donde el auto-open llama repetidamente con el mismo artefacto pero contenido actualizado.
+- **Provider value memoizado**: `useMemo` envuelve el objeto `value` del Provider con dependencias explicitas. Sin esto, cada render del Provider creaba un nuevo objeto y forzaba re-render de TODOS los consumers via `Object.is()`. Este fix, junto con el guard por ID, resuelve el crash "Maximum update depth exceeded" durante streaming de artefactos.
+- **`refEjecucionExterna`**: Ref booleano que protege las ejecuciones iniciadas por tool calls del modelo. Cuando es `true`, `abrirArtefacto` se convierte en no-op, evitando que el auto-open de `bloque-codigo.tsx` resetee `estadoEjecucion` durante una ejecucion en curso. Se activa en `abrirYEjecutarArtefacto` y se desactiva en su `finally`.
+
+### `ejecutor-codigo.ts` - Motor de Ejecucion Local de Codigo
+
+Motor de ejecucion de codigo en el navegador. Soporta dos familias de lenguajes con arquitecturas completamente distintas:
+
+- **JavaScript/TypeScript**: iframe sandboxed aislado (nuevo por cada ejecucion)
+- **Python**: Pyodide WASM (singleton lazy, cacheado persistentemente via Cache API)
+
+**Constantes:**
+
+| Constante | Valor | Descripcion |
+|-----------|-------|-------------|
+| `LENGUAJES_EJECUTABLES` | `javascript`, `js`, `typescript`, `ts`, `jsx`, `tsx`, `python`, `py` | Set de lenguajes soportados |
+| `TIMEOUT_EJECUCION_MS` | `10_000` (10s) | Tiempo maximo de ejecucion |
+| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes | Stdlib + cientificos disponibles en Pyodide 0.27.5 |
+| `PYODIDE_CDN` | `https://cdn.jsdelivr.net/pyodide/v0.27.5/full/` | URL del CDN de Pyodide |
+| `NOMBRE_CACHE_PYODIDE` | `pyodide-v0.27.5` | Nombre del cache persistente |
+| `ORIGEN_SANDBOX` | `__ejecutor_penguin__` | Identificador para filtrar postMessages |
+| `MARCADOR_IMAGEN_BASE64` | `__IMG_BASE64__:` | Prefijo en stdout para identificar imagenes base64 capturadas por matplotlib |
+| `PREAMBLE_MATPLOTLIB` | (template Python) | Configura matplotlib con backend Agg (no-GUI) antes del codigo del usuario |
+| `EPILOGUE_MATPLOTLIB` | (template Python) | Captura figuras matplotlib como PNG base64 y las imprime con marcador especial |
+
+**Funciones exportadas:**
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `esLenguajeEjecutable(lenguaje)` | Verifica si un lenguaje soporta ejecucion |
+| `ejecutarCodigo(codigo, lenguaje)` | Ejecuta codigo y retorna `ResultadoEjecucion` |
+| `obtenerEstadoPyodide()` | Retorna estado actual de Pyodide (`inactivo` \| `cargando` \| `listo` \| `error`) |
+| `validarImportsPython(codigo)` | Retorna lista de imports no disponibles en Pyodide (vacia si todo OK) |
+
+**Cache API persistente (`fetchConCache`):**
+
+Estrategia cache-first para Pyodide (~11MB WASM) y paquetes Python:
+1. Intenta leer de `caches.open("pyodide-v0.27.5")`
+2. Si hay hit, retorna sin red
+3. Si no, descarga via `fetch()`, guarda en cache, retorna
+4. Si la Cache API no esta disponible (SSR), usa `fetch()` normal
+
+Se integra en `loadPyodide()` via el parametro `fetch: fetchConCache`. Esto cachea automaticamente el WASM, los scripts JS y los paquetes Python (.whl) que el usuario importe. Se solicita `navigator.storage.persist()` al primer uso para evitar eviccion.
+
+**Ejecutor JavaScript (iframe sandboxed):**
+
+Crea un iframe nuevo para cada ejecucion (no reutiliza) por seguridad:
+- `sandbox="allow-scripts"` sin `allow-same-origin`
+- CSP via meta tag: `default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'`
+- Intercepta `console.log`, `console.error`, `console.warn`, `console.info`
+- Ejecuta via `eval()` (requiere `'unsafe-eval'` en CSP)
+- Comunica resultados via `postMessage` con identificador `ORIGEN_SANDBOX`
+- Timeout via `setTimeout` en el padre + destruccion del iframe
+- El iframe se elimina del DOM con 100ms de retraso para permitir mensajes finales
+
+**Ejecutor Python (Pyodide WASM):**
+
+Singleton lazy: Pyodide se carga solo al primer uso de Python y persiste en memoria:
+- `loadPyodide()` con `fetch: fetchConCache` para cache persistente
+- Despues de cargar, override de `input()` y `sys.stdin`:
+  ```python
+  sys.stdin = io.StringIO('')
+  builtins.input = lambda prompt='': raise EOFError('input() no disponible...')
+  ```
+  Esto previene `OSError: [Errno 29] I/O error` cuando codigo Python usa `input()` (Pyodide WASM no tiene stdin interactivo)
+- `loadPackagesFromImports(codigo)` carga paquetes automaticamente (numpy, pandas, etc.)
+- **Pre-validacion de imports** (`validarImportsPython`): antes de `loadPackagesFromImports`, extrae los top-level imports del codigo via regex y los valida contra `PAQUETES_PYODIDE_DISPONIBLES`. Si hay paquetes no disponibles, retorna error claro en vez del criptico `ModuleNotFoundError`. Ademas, `loadPackagesFromImports` se ejecuta dentro de try-catch para capturar errores de carga de paquetes
+- Paquetes descargados se cachean via el mismo `fetchConCache`
+- Redireccion de stdout/stderr via `setStdout`/`setStderr` (batched callbacks)
+- Timeout via `Promise.race` contra `promesaTimeout`
+- La ultima expresion evaluada se captura como resultado (tipo "resultado")
 
 ---
 
@@ -710,6 +873,7 @@ data: {"tipo":"citacion","citacion":{"url":"...","titulo":"..."}}
 data: {"tipo":"pensamiento_iniciado"}
 data: {"tipo":"pensamiento_delta","delta":"Analizando..."}
 data: {"tipo":"pensamiento_completado"}
+data: {"tipo":"tool_call","nombre":"ejecutar_codigo","argumentos":"{...}","callId":"...","idRespuesta":"..."}
 data: [FIN]
 ```
 
@@ -717,9 +881,53 @@ data: [FIN]
 - Convierte roles del español al ingles (`usuario` → `user`)
 - Soporta contenido multimodal (imagenes y archivos en el ultimo mensaje)
 - Herramienta de busqueda web habilitada por defecto
+- **Herramienta `ejecutar_codigo`** (function calling): el modelo puede invocar la funcion `ejecutar_codigo` con parametros `{lenguaje: "python"|"javascript", codigo: "..."}` via el mecanismo de tool use de OpenAI. La herramienta se define con `strict: true` para schema enforcement. Cuando el modelo emite un tool call, el backend envia el evento `tool_call` al frontend y cierra el stream inmediatamente. El frontend ejecuta el codigo localmente y envia el resultado a `/api/chat/continuar` para que el modelo continue
 - Reasoning habilitado para modelos con `tieneReasoning: true` (definido en `modelos.ts`)
 - `max_output_tokens` dinamico: usa `maxTokensSalida` del modelo seleccionado (definido en `modelos.ts`). GPT-5.x y GPT-4.1: 32768; GPT-4o: 16384
-- **System prompt para formateo matematico, estructura de respuesta e idioma de razonamiento** (`INSTRUCCIONES_SISTEMA`, importado de `lib/constantes.ts`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a: (1) usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, con display math (`$$`) en lineas separadas para formulas clave; (2) estructurar listas numeradas con titulo en **bold** seguido de linea en blanco antes de la explicacion; (3) usar headers para secciones largas; (4) razonar en el mismo idioma del usuario (español si el usuario escribe en español). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
+- **System prompt para formateo matematico, estructura de respuesta, idioma de razonamiento e instrucciones de ejecucion de codigo** (`INSTRUCCIONES_SISTEMA`, importado de `lib/constantes.ts`): se envia via el parametro `instructions` de la Responses API. Incluye secciones: (1) MATH FORMATTING: delimitadores LaTeX; (2) RESPONSE STRUCTURE: listas y headers; (3) LANGUAGE: razonar en el idioma del usuario; (4) CODE EXECUTION: cuando usar/no usar la herramienta, timeout; (5) CRITICAL RESTRICTIONS: prohibiciones explicitas de `input()`, `plt.show()`, `time.sleep()`, threads/procesos, shell commands, network requests; (6) Available Python packages: lista de stdlib y cientificos disponibles en Pyodide, y lista de paquetes NO disponibles
+
+**Definicion de herramienta `ejecutar_codigo`:**
+
+```typescript
+{
+  type: "function",
+  name: "ejecutar_codigo",
+  description: "Ejecuta codigo Python o JavaScript en el navegador...",
+  parameters: {
+    type: "object",
+    properties: {
+      lenguaje: { type: "string", enum: ["python", "javascript"] },
+      codigo: { type: "string", description: "El codigo fuente a ejecutar" },
+    },
+    required: ["lenguaje", "codigo"],
+    additionalProperties: false,
+  },
+  strict: true,
+}
+```
+
+### `POST /api/chat/continuar` - Continuacion tras Tool Call
+
+Endpoint para enviar el resultado de una ejecucion de tool call al modelo y continuar la respuesta. Utiliza `previous_response_id` de la Responses API para encadenar con la respuesta que genero el tool call.
+
+**Request:**
+```json
+{
+  "idRespuesta": "resp_abc123",
+  "callId": "call_xyz789",
+  "resultado": "42\n",
+  "modelo": "gpt-4o-mini"
+}
+```
+
+**Response:** Stream SSE identico a `/api/chat` (mismos eventos de texto, busqueda, pensamiento, tool_call, citacion, `[FIN]`).
+
+**Caracteristicas:**
+- Usa `previous_response_id` para encadenar con la respuesta anterior
+- Envia el resultado como `function_call_output` con el `call_id` correspondiente
+- Incluye las mismas herramientas (web_search + ejecutar_codigo) para soportar encadenamiento
+- Mismo `INSTRUCCIONES_SISTEMA`, reasoning condicional y `max_output_tokens` que `/api/chat`
+- Si el modelo hace otro tool call durante la continuacion, el frontend puede encadenar recursivamente
 
 ### `POST /api/titulo` - Generacion de Titulos
 
@@ -775,6 +983,14 @@ Usa `gpt-4o-mini` con maximo 30 tokens para generar un titulo de 6 palabras.
 |----------------|-------------|
 | `TipoArtefacto` | Union literal: `"codigo"` \| `"html"` \| `"svg"` \| `"markdown"` \| `"latex"` |
 | `Artefacto` | Contenido extraido del chat para el panel lateral: `id`, `tipo`, `titulo`, `contenido`, `lenguaje?`, `totalLineas` |
+
+### Tipos Ejecucion de Codigo
+
+| Tipo/Interfaz | Descripcion |
+|----------------|-------------|
+| `EstadoEjecucion` | Union literal: `"inactivo"` \| `"cargando"` \| `"ejecutando"` \| `"completado"` \| `"error"`. Representa el ciclo de vida de una ejecucion en el panel de artefactos |
+| `EntradaConsola` | Una linea de salida de la consola: `tipo` (`"stdout"` \| `"stderr"` \| `"resultado"` \| `"error"` \| `"imagen"`), `contenido` (string; para `"imagen"`: data URL base64 `data:image/png;base64,...`) y `marcaTiempo` (ms desde inicio) |
+| `ResultadoEjecucion` | Resultado completo de una ejecucion: `exito` (boolean), `salidas` (array de `EntradaConsola`), `duracionMs` (tiempo total) e `interrumpido?` (boolean, si fue timeout) |
 
 ---
 
@@ -1098,6 +1314,33 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 81. **Proteccion contra bucles infinitos en iframe** (`panel-artefacto.tsx`): `VistaPreviaArtefacto` inyecta un script de heartbeat en el `srcDoc` del iframe. El padre envia pings cada 2s via `postMessage`; si no recibe respuesta en 5s, muestra overlay "dejo de responder" con boton "Recargar" que destruye y recrea el iframe via React `key`. Patron inspirado en CodeSandbox. Protege contra codigo LLM con loops infinitos (`while(true)`) que bloquearian el event loop del iframe.
 82. **Fix crash por tokens especiales en conteo de tokens** (`contenedor-chat.tsx`): `contarTokensMensaje()` llamaba a `countTokens(contenido)` de `gpt-tokenizer` sin opciones, lo que causaba un error de runtime `Disallowed special token found: <|endoftext|>` cuando el contenido de un mensaje incluia tokens especiales literales (ej: conversaciones sobre tokenizacion, prompts o formato interno de modelos). **Fix**: se pasa `{ allowedSpecial: 'all' }` como segundo argumento a `countTokens()`. Es seguro porque la funcion solo se usa para estimar el tamano del historial para truncamiento dinamico, no para enviar tokens al modelo. Los tokens especiales en el texto son texto literal del usuario/asistente, no instrucciones de control.
 83. **Fix editor de artefactos no dejaba editar (feedback loop)** (`panel-artefacto.tsx`): al escribir en el editor overlay del panel de artefactos, el texto se revertia instantaneamente al original, haciendo el editor inutilizable. **Causa raiz**: `manejarCambioEdicion` escribia al React Context (`actualizarContenidoArtefacto`), lo que disparaba el sync effect de `BloqueCodigoConResaltado` (bloque-codigo.tsx:409-413) — diseñado para sincronizar streaming→panel — que detectaba discrepancia entre el contenido editado y el `codigo` original del markdown y lo revertia. En desktop el chat permanece montado (`hidden lg:flex`) cuando el panel esta abierto, manteniendo el effect activo. **Fix**: las ediciones ahora viven en un buffer local `contenidoEditado` (estado `useState<string | null>`) completamente desacoplado del contexto. Al entrar en edicion se inicializa desde `artefactoActivo.contenido`; al salir se descarta (`null`). La variable derivada `contenidoActual = contenidoEditado ?? contenido` alimenta textarea, capa visual, copy, download, preview y conteo de lineas. `actualizarContenidoArtefacto` ya no se importa en el panel. El sync effect de streaming queda intacto en `bloque-codigo.tsx` sin modificaciones. Patron inspirado en `react-simple-code-editor` donde el estado de edicion es local y los props externos no lo sobreescriben.
+84. **Ejecucion local de codigo en el navegador** (`lib/ejecutor-codigo.ts`): motor de ejecucion dual que soporta JavaScript/TypeScript (iframe sandboxed aislado, nuevo por cada ejecucion) y Python (Pyodide WASM, singleton lazy). JavaScript se ejecuta via `eval()` dentro de un iframe con `sandbox="allow-scripts"` y CSP que bloquea red (`default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'`). Captura `console.log/error/warn/info` via `postMessage` con identificador `ORIGEN_SANDBOX`. Python se ejecuta via Pyodide (~11MB WASM) con carga lazy al primer uso, redireccion de stdout/stderr, carga automatica de paquetes (`loadPackagesFromImports`), y override de `input()`/`sys.stdin` para dar error claro en vez de I/O error criptico. Timeout de 10 segundos para ambos lenguajes. Lenguajes soportados: `javascript`, `js`, `typescript`, `ts`, `jsx`, `tsx`, `python`, `py`. **Soporte matplotlib**: el codigo Python se envuelve con `PREAMBLE_MATPLOTLIB` (configura backend Agg no-GUI) y `EPILOGUE_MATPLOTLIB` (captura figuras abiertas como PNG base64 via `savefig` a `BytesIO` → `base64.b64encode`). Las imagenes se imprimen con marcador `__IMG_BASE64__:` que `postProcesarImagenes()` convierte en entradas tipo `"imagen"` con data URL renderizable.
+85. **Cache persistente de Pyodide via Cache API** (`lib/ejecutor-codigo.ts`): estrategia cache-first para Pyodide WASM y paquetes Python. `fetchConCache()` intercepta todas las descargas: primero busca en `caches.open("pyodide-v0.27.5")`, si hay hit retorna sin red, si no descarga y guarda en cache. Se integra en `loadPyodide()` via el parametro `fetch`, cacheando automaticamente el WASM (~11MB), scripts JS y paquetes `.whl`. Se solicita `navigator.storage.persist()` al primer uso para evitar eviccion del cache. Despues de la primera descarga, las cargas subsiguientes son instantaneas desde cache.
+86. **Boton Ejecutar en bloques de codigo** (`bloque-codigo.tsx`, `panel-artefacto.tsx`): para lenguajes ejecutables (JS/TS/Python), tanto los bloques inline (<25 lineas) como los artefactos (>=25 lineas) muestran un boton "Ejecutar" (icono `Play`). En bloques inline, el handler `manejarEjecutarEnArtefacto` usa `abrirYEjecutarArtefacto()` del contexto, que recibe el artefacto como parametro y ejecuta directamente sin depender del estado de React — eliminando la race condition del patron anterior (`setTimeout(50ms)` + `ejecutarArtefacto()`). En artefactos ya abiertos, el boton esta directamente en la cabecera del panel. Los lenguajes no ejecutables (Go, Rust, CSS, etc.) no muestran el boton. **Validacion de imports**: para Python, si `validarImportsPython()` detecta imports no disponibles en Pyodide, el boton Ejecutar se oculta tanto en los bloques inline como en el panel de artefactos. **Ocultar con `input()`**: si el codigo Python usa `input()` (detectado por `detectarUsoInput()`), el boton se oculta completamente en vez de mostrarse deshabilitado, ya que `input()` no esta disponible en WASM. **Ejecucion per-bloque**: el boton Ejecutar esta siempre habilitado para bloques completos, incluso durante streaming de otros bloques. react-markdown solo renderiza bloques con fence de cierre (` ``` `), por lo que un bloque renderizado siempre contiene codigo completo. Se elimino `ejecucionDeshabilitada = estaGenerandose` que bloqueaba TODOS los botones durante cualquier streaming.
+87. **Consola de resultados en panel de artefactos** (`panel-artefacto.tsx`): componente `ConsolaResultados` con tema claro posicionado en la parte inferior del panel sobre un divisor (`border-t`). Barra de estado colapsable con icono animado (spinner durante ejecucion, circulo coloreado despues), duracion en ms y chevron de toggle. Area scrollable (`max-h-48`) con font mono `text-xs`. Colores por tipo: stdout negro, stderr ambar (`text-amber-600`), resultado verde (`text-emerald-600`), error rojo (`text-red-600`). Auto-scroll via `useEffect` que hace `scrollTop = scrollHeight` al cambiar salidas. Solo visible si hay ejecucion activa o hay salida.
+88. **Herramienta `ejecutar_codigo` via function calling** (`route.ts`, `contenedor-chat.tsx`): los modelos AI pueden invocar la funcion `ejecutar_codigo` con parametros `{lenguaje, codigo}` durante la generacion de respuesta. El backend define la herramienta con `strict: true` en el array de tools de la Responses API de OpenAI. Cuando el modelo emite un function call, el backend usa el evento `response.output_item.done` con `item.type === "function_call"` para extraer `name`, `arguments` y `call_id` del item completo (NOTA: el evento `response.function_call_arguments.done` solo contiene `arguments` e `item_id`, NO `name` ni `call_id`). El backend envia un evento SSE `tool_call` al frontend con `nombre`, `argumentos`, `callId` e `idRespuesta`, y cierra el stream. El frontend parsea los argumentos, inserta el bloque de codigo en el texto del asistente, ejecuta localmente via `ejecutarCodigo()`, y envia el resultado al modelo via `/api/chat/continuar` para que continue generando.
+89. **Endpoint de continuacion tras tool call** (`app/api/chat/continuar/route.ts`): endpoint POST que recibe `{idRespuesta, callId, resultado, modelo}` y continua la respuesta del modelo usando `previous_response_id` de la Responses API de OpenAI. Envia el resultado como `function_call_output` con el `call_id` correspondiente. Mismo patron de streaming SSE, mismas herramientas (web_search + ejecutar_codigo), mismo system prompt y reasoning condicional que `/api/chat`. Soporta encadenamiento recursivo: si el modelo hace otro tool call durante la continuacion, el frontend puede encadenar de nuevo.
+90. **Orquestacion de tool calls via panel de artefactos** (`contenedor-chat.tsx`): funcion `manejarToolCall` anidada dentro de `enviarConsultaAlModelo` que gestiona el ciclo de vida completo de las invocaciones de herramientas del modelo. Cuando el modelo emite un tool call `ejecutar_codigo`, el handler: (1) parsea argumentos JSON `{lenguaje, codigo}`, (2) inserta un code fence con pseudo-lenguaje (`` ```ejecutando:python ``) en el markdown del chat, que `BloqueCodigoConResaltado` renderiza como componente `IndicadorEjecucion` premium (tarjeta con icono Terminal pulsante y dots animados), (3) abre el panel de artefactos con el codigo y ejecuta atomicamente via `abrirYEjecutarArtefacto()` del contexto — el usuario ve el codigo y `ConsolaResultados` mientras ejecuta, (4) al terminar, reemplaza el indicador temporal (via regex `/```ejecutando:[^\n]*\n```\n\n/`) con un bloque de codigo marcado (`@ejecutado-por-modelo exito/error duracionMs salidasJSON`) que se renderiza como `TarjetaEjecucion` + bloque de resultado formateado, (5) cierra el panel despues de 800ms de delay, (6) llama `enviarContinuacionConStreaming()` para que el modelo continue generando con el resultado. El marcador ahora serializa el resultado completo (salidas JSON + duracion) en la primera linea del bloque, permitiendo restaurar la consola al reabrir la tarjeta. Gestiona correctamente el texto acumulado (`ultimoTextoContinuacion`) para no perder contenido entre el texto principal y la continuacion. Soporta encadenamiento recursivo con limite de profundidad (`MAX_TOOL_CALLS_ENCADENADOS = 5`). Si el tool name es desconocido, limpia `estaEscribiendo` y `referenciaControlador` para evitar bloqueo permanente. Si la ejecucion falla, reemplaza el indicador con un mensaje de error especifico. Si el usuario cancela durante la ejecucion, cierra el panel y limpia estado. **Patron awaitable**: `alToolCall` retorna `Promise<void>` y es `await`-eado en el stream SSE, integrando toda la cadena de tool calls (ejecucion + continuacion + encadenamientos) dentro del contexto de errores de `enviarMensajeConStreaming`. Esto implementa 4 capas de seguridad (defense-in-depth): (1) `alFinalizar` en continuacion, (2) `alError` en continuacion, (3) try-catch en `manejarToolCall`, (4) try-catch externo en `enviarMensajeConStreaming` que captura errores propagados desde `await alToolCall`.
+91. **Protocolo SSE extendido para tool calls** (`cliente-chat.ts`): el cliente de streaming maneja eventos `tool_call` con `await alToolCall?.(...)` seguido de `return`. El `await` integra toda la cadena de tool calls (ejecucion local + continuacion + posibles encadenamientos) dentro del contexto de `enviarMensajeConStreaming`, permitiendo que el try-catch externo capture cualquier error no manejado. El tipo de `alToolCall` es `void | Promise<void>` para soportar tanto callbacks sincronos como async. Si el evento `tool_call` llega con campos faltantes (nombre, argumentos, callId o idRespuesta vacios), se llama `alFinalizar()` para limpiar el estado de `estaEscribiendo` y evitar que la app se quede "pegada". La funcion `enviarContinuacionConStreaming()` reutiliza el mismo patron de parsing SSE con callbacks reducidos (`alActualizar`, `alFinalizar`, `alError`, `alToolCall`) y soporta encadenamiento. Los callbacks de `alToolCall` en encadenamientos deben retornar la Promise (`return manejarToolCall(...)`) para mantener el patron awaitable.
+92. **System prompt con instrucciones de ejecucion de codigo** (`lib/constantes.ts`): seccion `CODE EXECUTION` en `INSTRUCCIONES_SISTEMA` que instruye al modelo sobre cuando usar la herramienta `ejecutar_codigo`, paquetes Python disponibles (numpy, pandas, scipy, matplotlib, etc.), limitaciones de JavaScript (iframe sandboxed sin red), timeout de 10 segundos, y cuando NO usarla (operaciones triviales). El system prompt se comparte entre servidor (parametro `instructions` de la Responses API) y cliente (conteo de tokens para presupuesto dinamico). Incluye secciones: (1) MATH FORMATTING: delimitadores LaTeX; (2) RESPONSE STRUCTURE: listas y headers; (3) LANGUAGE: razonar en el idioma del usuario; (4) CODE EXECUTION: cuando usar/no usar la herramienta, timeout; (5) CRITICAL RESTRICTIONS: prohibiciones explicitas de `input()`, `plt.show()`, `time.sleep()`, threads/procesos, shell commands, network requests; (6) Available Python packages: lista de stdlib y cientificos disponibles en Pyodide, y lista de paquetes NO disponibles
+93. **Estado de ejecucion en React Context** (`contexto-artefacto.tsx`): el contexto de artefactos gestiona `estadoEjecucion` (`"inactivo"` | `"cargando"` | `"ejecutando"` | `"completado"` | `"error"`), `resultadoEjecucion` (`ResultadoEjecucion | null`), `ejecutarArtefacto()` (funcion async para ejecucion manual del usuario) y `abrirYEjecutarArtefacto()` (operacion atomica para tool calls del modelo que retorna `ResultadoEjecucion`). Usa `refEjecucionExterna` (useRef) para proteger ejecuciones de tool calls contra interferencia del auto-open de `bloque-codigo.tsx`: cuando es `true`, `abrirArtefacto()` se convierte en no-op. El estado inicial de ejecucion se determina segun si Pyodide necesita cargarse. Se limpia automaticamente al cerrar el panel. **Restauracion de resultados previos**: `abrirArtefacto()` ahora verifica si el artefacto incluye `resultadoPrevio` (campo opcional de tipo `ResultadoEjecucion`); si existe, restaura `resultadoEjecucion` y establece `estadoEjecucion` a `"completado"` o `"error"` segun `resultadoPrevio.exito`. Esto permite que `TarjetaEjecucion` (bloques ejecutados por el modelo) restauren la consola con salidas, duracion y estado al reabrir el artefacto, sin necesidad de re-ejecutar el codigo.
+94. **Indicador de ejecucion premium durante tool calls** (`bloque-codigo.tsx`, `contenedor-chat.tsx`): cuando el modelo invoca `ejecutar_codigo`, `contenedor-chat.tsx` inserta un code fence con pseudo-lenguaje (`` ```ejecutando:python ``) en el markdown del chat. `BloqueCodigoConResaltado` detecta lenguajes que empiezan con `"ejecutando:"` y renderiza el componente `IndicadorEjecucion` en vez de un bloque de codigo normal. `IndicadorEjecucion` es una tarjeta neutral con la misma estructura visual que `TarjetaArtefacto` y `TarjetaEjecucion`: fondo `--color-claude-sidebar`, icono `Terminal` pulsante (`animate-pulse`) en fondo oscuro `#1e1e1e`, texto "Ejecutando {lenguaje}" con tres dots animados (reutiliza `.punto-cargando` de globals.css), y subtitulo "Procesando codigo". La clase CSS `.indicador-ejecutando` aplica animacion de entrada suave (reutiliza keyframe `entrada-burbuja`). Al completar la ejecucion, el code fence temporal se reemplaza por el bloque marcado con `@ejecutado-por-modelo` que se renderiza como `TarjetaEjecucion`.
+95. **Resultado de ejecucion visible en el chat** (`contenedor-chat.tsx`): despues de ejecutar un tool call, el resultado se muestra formateado al usuario directamente en el texto del mensaje del asistente. **Formato inteligente**: resultados cortos (1-3 lineas) se muestran como markdown inline ("**Resultado:** 42") para que formulas, formato y expresiones matematicas se rendericen correctamente. Resultados largos (4+ lineas) se muestran en code fence ("**Resultado:**\n```...```") para legibilidad. Errores siempre usan code fence ("**Error de ejecucion:**\n```...```"). Antes, todos los resultados usaban code fence, impidiendo el renderizado de formulas.
+96. **Pre-validacion de imports Python contra whitelist** (`ejecutor-codigo.ts`): antes de ejecutar codigo Python via Pyodide, `validarImportsPython()` extrae los top-level imports del codigo via regex y los valida contra `PAQUETES_PYODIDE_DISPONIBLES` (Set con ~90 paquetes: stdlib + cientificos). Si hay paquetes no disponibles, retorna error claro (`"Paquete(s) no disponible(s) en Pyodide: ..."`) en vez del criptico `ModuleNotFoundError` de Pyodide. Ademas, `loadPackagesFromImports` se ejecuta dentro de try-catch para capturar errores de carga de paquetes. Esta doble validacion (whitelist + try-catch) hace el sistema robusto contra paquetes desconocidos.
+97. **Limite de recursion para tool calls encadenados** (`contenedor-chat.tsx`): constante `MAX_TOOL_CALLS_ENCADENADOS = 5` que limita la profundidad de tool calls recursivos. Cuando el modelo ejecuta codigo, recibe el resultado, y vuelve a ejecutar codigo (encadenamiento), el parametro `profundidad` se incrementa en cada nivel. Al alcanzar el limite, se inserta un mensaje informativo ("*Se alcanzo el limite de ejecuciones encadenadas.*") y se finaliza la generacion limpiamente. Previene loops infinitos donde el modelo podria encadenar tool calls indefinidamente.
+98. **TarjetaEjecucion — registro visual de tool calls en el chat** (`bloque-codigo.tsx`): componente especial que reemplaza los bloques de codigo marcados con `@ejecutado-por-modelo` (comentario en la primera linea). Diseno neutral monocromatico consistente con `TarjetaArtefacto`: misma estructura de 3 columnas (icono + texto + flecha), fondo `--color-claude-sidebar` con hover `--color-claude-sidebar-hover`, borde `--color-claude-input-border`, icono `Terminal` en fondo oscuro `#1e1e1e`. El estado se indica con un punto de color sutil (`●` emerald-500 para exito, red-500 para error) junto al nombre del lenguaje, en vez de badges o gradientes coloreados. Subtitulo muestra conteo de lineas y "Codigo del modelo". `ChevronRight` aparece en hover (opacity transition) como en `TarjetaArtefacto`. Click abre el artefacto en el panel lateral via `abrirArtefacto()` pasando `resultadoPrevio` (parseado del marcador serializado), lo que restaura la consola con salidas y duracion sin re-ejecutar. La deteccion usa regex `REGEX_MARCADOR_EJECUCION` con 3 grupos adicionales: estado (`exito`/`error`), duracion en ms, y salidas como JSON. La primera linea (marcador) se elimina del codigo mostrado.
+99. **Sistema de marcadores serializados para bloques ejecutados por el modelo** (`contenedor-chat.tsx`, `bloque-codigo.tsx`): cuando `manejarToolCall` completa una ejecucion, inserta el codigo del modelo como bloque markdown con un comentario marcador en la primera linea que incluye el resultado completo serializado: `# @ejecutado-por-modelo exito 1234 [{"tipo":"stdout","contenido":"hello","marcaTiempo":0}]` (Python) o `// @ejecutado-por-modelo error 500 [...]` (JS/TS). El formato es: `marcador estado duracionMs salidasJSON`. La regex `REGEX_MARCADOR_EJECUCION` (`/^(?:# |\/\/ )@ejecutado-por-modelo(?:\s+(exito|error))?(?:\s+(\d+)\s+(.+))?$/`) parsea 3 grupos opcionales: [1]=estado, [2]=duracionMs, [3]=salidasJSON. `BloqueCodigoConResaltado` reconstruye un `ResultadoEjecucion` completo desde estos datos y lo pasa a `TarjetaEjecucion`, que a su vez lo incluye como `resultadoPrevio` al llamar `abrirArtefacto()`. Esto permite que el panel restaure la consola con salidas, duracion y estado al reabrir un bloque ya ejecutado, sin necesidad de cache externo ni re-ejecucion. El marcador es invisible al usuario final (se elimina antes de mostrar el codigo). Backward compatible: marcadores sin datos serializados (formato viejo) siguen funcionandose gracias a los grupos opcionales de la regex.
+100. **Fix tool calling "se queda pegado" — patron awaitable + evento correcto** (`route.ts`, `continuar/route.ts`, `cliente-chat.ts`, `contenedor-chat.tsx`, `bloque-codigo.tsx`, `panel-artefacto.tsx`): **Problema principal (backend)**: el backend usaba el evento `response.function_call_arguments.done` para extraer datos del tool call, pero este evento solo contiene `arguments` e `item_id` — NO tiene `name` ni `call_id`. Esto causaba que `nombre` y `callId` llegaran como strings vacios al frontend, activando el branch de "campos faltantes" y dejando la app pegada. **Fix backend**: reemplazar `response.function_call_arguments.done` por `response.output_item.done` con `item.type === "function_call"`, que contiene el item completo con `name`, `arguments` y `call_id`. Mismo fix en ambos endpoints (`/api/chat` y `/api/chat/continuar`). **Problema secundario (frontend)**: `manejarToolCall` era una funcion `async` llamada sin `await` (fire-and-forget). Su Promise flotaba desconectada: si cualquier error no manejado ocurria, se convertia en "unhandled promise rejection" invisible y `estaEscribiendo` quedaba en `true` permanentemente. **Fix frontend**: (1) Tipo de `alToolCall` cambiado a `void | Promise<void>`, (2) `await alToolCall?.(...)` en ambos parsers SSE, (3) `alFinalizar()` en el branch de campos faltantes, (4) `return manejarToolCall(...)` en callback de encadenamiento. **Fix boton Ejecutar**: reemplazado `setTimeout(50ms) + ejecutarArtefacto()` por `abrirYEjecutarArtefacto()` (operacion atomica). **Fix texto UI**: "Cargando Pyodide..." cambiado a "Cargando Python...".
+101. **Fix hooks ordering + UI consistente de ejecucion de codigo** (`bloque-codigo.tsx`, `contenedor-chat.tsx`, `contexto-artefacto.tsx`, `tipos.ts`, `globals.css`): correccion de 4 problemas interrelacionados. **(1) Fix "Rendered fewer hooks than expected"**: `BloqueCodigoConResaltado` tenia hooks (`useCallback`, `useState`, 2x `useEffect`) despues de un early return condicional (check de marcador `@ejecutado-por-modelo`). Cuando el streaming agregaba el marcador a un bloque, React detectaba menos hooks y crasheaba. Fix: mover TODOS los hooks (7 en total) antes de cualquier early return. Los useEffects de auto-open/sync son no-ops para bloques marcados porque `esArtefactoValido` es false. **(2) TarjetaEjecucion monocromatica**: reemplazados gradientes emerald/red (`bg-gradient-to-r from-emerald-50`) y badges coloreados por diseno neutral identico a `TarjetaArtefacto` (fondo `--color-claude-sidebar`, icono Terminal en `#1e1e1e`, punto de color `●` sutil para estado). **(3) IndicadorEjecucion premium**: reemplazado indicador italic markdown (`*Ejecutando codigo...*`) por componente tarjeta con icono Terminal pulsante y dots animados (`.punto-cargando`), inyectado como code fence con pseudo-lenguaje `ejecutando:python`. **(4) Cache de resultados via marcador serializado**: `Artefacto` extendido con `resultadoPrevio?: ResultadoEjecucion`, el marcador serializa salidas JSON + duracion en la primera linea, `abrirArtefacto()` restaura el estado de ejecucion, eliminando la necesidad de re-ejecutar para ver output.
+
+102. **Titulo flotante se oculta con artefacto abierto** (`area-chat.tsx`): la barra superior flotante (boton sidebar + titulo de conversacion editable) se oculta automaticamente cuando el panel de artefactos esta abierto en pantallas grandes (`lg:`). Usa `lg:opacity-0 lg:pointer-events-none` con `transition-opacity duration-200` para una transicion suave. Lee `artefactoActivo` de `useArtefacto()`. En mobile no aplica porque el chat completo esta `hidden` cuando hay artefacto. Evita solapamiento visual entre el titulo y la cabecera del panel de artefactos.
+103. **Fix crash React "Maximum update depth exceeded"** (`contexto-artefacto.tsx`, `contexto-mensaje.tsx`, `bloque-codigo.tsx`): durante streaming de artefactos (codigo >=25 lineas), React entraba en un ciclo infinito de re-renders que crasheaba la app. **Causa raiz**: el `useEffect` de auto-apertura en `bloque-codigo.tsx:499-511` tenia `codigo` en sus dependencias y se disparaba cada ~50ms durante streaming, llamando `abrirArtefacto()` con un nuevo object literal. `Object.is()` siempre retornaba `false` para objetos nuevos, programando re-renders en cada tick. **3 amplificadores**: (1) Provider value de `ProveedorArtefacto` sin memoizar (cada render creaba nuevo objeto, forzando re-render de TODOS los consumers), (2) Provider value de `ProveedorMensaje` sin memoizar (mismo problema), (3) el sync effect separado (lineas 515-519) hacia `actualizarContenidoArtefacto()` en cada tick, duplicando setState. **Fix 4-partes**: (1a) Guard en `abrirArtefacto`: usa `setState(prev => prev?.id === artefacto.id ? prev : artefacto)` para no triggerear re-render si ya muestra el mismo artefacto. (1b) `useMemo` en Provider value de `ProveedorArtefacto` con dependencias explicitas. (1c) `useMemo` en Provider value de `ProveedorMensaje`. (1d) Gate en auto-open effect: `yaAbiertoAutoRef` (mutable ref via useState) se marca `true` al primer disparo, y el effect solo corre cuando `esArtefactoValido` transiciona de false a true. Dependencias reducidas a `[estaGenerandose, esArtefactoValido]`. El sync effect separado se mantiene intacto para actualizar contenido durante streaming.
+104. **Soporte matplotlib/graficos en consola de ejecucion** (`ejecutor-codigo.ts`, `tipos.ts`, `panel-artefacto.tsx`): los graficos generados con matplotlib en codigo Python ahora se renderizan como imagenes PNG dentro de la consola de resultados del panel de artefactos. **Pipeline**: (1) `PREAMBLE_MATPLOTLIB` se inyecta antes del codigo del usuario, configurando `matplotlib.use('agg')` (backend no-GUI necesario en WASM) antes de cualquier import del usuario. (2) El codigo del usuario se ejecuta normalmente. (3) `EPILOGUE_MATPLOTLIB` se inyecta despues, iterando todas las figuras abiertas (`plt.get_fignums()`), guardandolas como PNG a 150 DPI via `savefig` → `BytesIO` → `base64.b64encode`, e imprimiendolas con prefijo `__IMG_BASE64__:`. (4) `postProcesarImagenes()` post-procesa las salidas de Pyodide, convirtiendo entradas stdout con el marcador en entradas tipo `"imagen"` con data URL (`data:image/png;base64,...`). (5) `ConsolaResultados` renderiza entradas `"imagen"` como `<img src={dataURL}>` con `max-w-full rounded my-1` y max-height 400px. El tipo `EntradaConsola` en `tipos.ts` se extendio con `"imagen"` como tipo adicional. El post-procesamiento se aplica tanto en ejecuciones exitosas como en errores (el codigo pudo generar graficos antes de fallar). Variables Python internas usan prefijo `__` para evitar colisiones con el codigo del usuario.
+105. **Ejecucion per-bloque durante streaming** (`bloque-codigo.tsx`): el boton Ejecutar de bloques de codigo ahora esta siempre habilitado, incluso mientras el modelo sigue generando otros bloques. **Antes**: `ejecucionDeshabilitada = estaGenerandose` deshabilitaba TODOS los botones Ejecutar de todos los bloques mientras cualquier mensaje estaba en streaming. **Ahora**: se elimino `ejecucionDeshabilitada` completamente. react-markdown solo renderiza bloques de codigo cuando el fence de cierre (` ``` `) ya llego, por lo que cualquier bloque renderizado como componente siempre contiene codigo completo. No hay riesgo de ejecutar codigo parcial.
+106. **Ocultar boton Ejecutar con `input()`** (`bloque-codigo.tsx`, `panel-artefacto.tsx`): cuando `detectarUsoInput()` detecta que el codigo Python usa `input()`, el boton Ejecutar se oculta completamente tanto en bloques inline como en la cabecera del panel de artefactos. **Antes**: el boton se mostraba en color amber con tooltip de warning, lo que confundia al usuario porque podia intentar ejecutar de todos modos y recibir un error criptico. **Ahora**: `esEjecutable` incluye `!tieneInput` en su condicion, y toda la logica de estilos amber fue eliminada. Se elimino tambien la referencia a `tieneInput` en los estilos del boton ya que no aplica.
+107. **Resultados de tool call como markdown inline** (`contenedor-chat.tsx`): los resultados de ejecucion de tool calls ahora usan formato inteligente basado en longitud. Resultados cortos (1-3 lineas) se muestran como markdown inline ("**Resultado:** 42" o "**Resultado:** $x^2 + 1$") permitiendo que formulas LaTeX, formato y expresiones matematicas se rendericen correctamente. Resultados largos (4+ lineas) mantienen code fence para legibilidad. Errores siempre usan code fence. La deteccion usa `salidasTexto.split("\n").length > 3` para determinar el formato. Antes, todos los resultados usaban code fence indiscriminadamente.
+108. **Consola de ejecucion compacta** (`panel-artefacto.tsx`): se redujo el espacio vertical muerto en la consola de resultados del panel de artefactos. **Cambios**: `py-2` (16px vertical) → `py-1.5` (12px vertical), `leading-relaxed` (line-height 1.625) → `leading-snug` (line-height 1.375). Estos ajustes eliminan el exceso de espacio entre lineas de salida sin comprometer la legibilidad, especialmente notable cuando la consola muestra pocas lineas.
+109. **Resize dinamico de consola y panel de artefactos** (`panel-artefacto.tsx`, `contenedor-chat.tsx`): dos features de redimensionamiento por drag implementados. **(1) Consola vertical**: drag handle de 4px (`h-1`) en el borde superior de `ConsolaResultados`, ENCIMA de la barra de estado ("Completado"). Color `bg-[var(--color-claude-input-border)]`, sin indicadores visuales extra. Arrastrar hacia arriba agranda la consola, hacia abajo la reduce. Estado `alturaConsola` (px, default `null` = `max-h-64`). Min 60px, max 60% del panel. Usa refs para tracking sin re-renders. **(2) Panel horizontal**: drag handle de 6px (`w-1.5`) posicionado como overlay absoluto en el borde izquierdo interno del panel (solo `lg:+`). Al ser overlay, se superpone al borde `border-l` del panel sin crear un espacio en blanco adicional, de forma que el scrollbar del chat queda pegado literalmente a la orilla del panel. Arrastrar a la izquierda agranda el panel, a la derecha lo reduce. Estado `anchoPanelPx` en `ContenedorChat`. Min 350px, max 50% del `<main>` (via `mainRef`). Sin barras ni indicadores visuales adicionales — solo cambio de cursor (`ns-resize`/`ew-resize`) y color de fondo al hover. `document.body.style.cursor` y `userSelect = "none"` durante drag. El panel mantiene `flex flex-1 min-w-0` en su contenedor interno para prevenir desbordes de scroll.
 
 ---
 

@@ -563,3 +563,8 @@ textarea:focus::placeholder {
 .animate-entrada-panel {
   animation: entrada-panel 200ms ease-out;
 }
+
+/* Indicador de ejecucion de codigo: entrada suave */
+.indicador-ejecutando {
+  animation: entrada-burbuja 250ms ease-out;
+}

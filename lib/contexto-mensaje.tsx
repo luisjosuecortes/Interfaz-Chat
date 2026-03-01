@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useContext, ReactNode } from "react"
+import { createContext, useContext, useMemo, ReactNode } from "react"
 
 // Contexto muy ligero que provee estado a nivel de mensaje (burbuja) individual.
 // Esto permite que componentes profundamente anidados (como bloques de codigo markdown)
@@ -25,8 +25,9 @@ interface PropiedadesProveedorMensaje {
 }
 
 export function ProveedorMensaje({ children, estaGenerandose }: PropiedadesProveedorMensaje) {
+    const valor = useMemo(() => ({ estaGenerandose }), [estaGenerandose])
     return (
-        <ContextoMensaje.Provider value={{ estaGenerandose }}>
+        <ContextoMensaje.Provider value={valor}>
             {children}
         </ContextoMensaje.Provider>
     )

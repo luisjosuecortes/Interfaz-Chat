@@ -140,6 +140,30 @@ export interface Artefacto {
   contenido: string
   lenguaje?: string
   totalLineas: number
+  /** Resultado de ejecucion previo (para codigo ejecutado por el modelo).
+   *  Permite restaurar la consola de resultados al abrir un artefacto ya ejecutado. */
+  resultadoPrevio?: ResultadoEjecucion
+}
+
+// === TIPOS EJECUCION DE CODIGO ===
+
+/** Estado del motor de ejecucion */
+export type EstadoEjecucion = "inactivo" | "cargando" | "ejecutando" | "completado" | "error"
+
+/** Entrada individual en la consola de salida */
+export interface EntradaConsola {
+  tipo: "stdout" | "stderr" | "resultado" | "error" | "imagen"
+  contenido: string  // Para "imagen": data URL base64 (data:image/png;base64,...)
+  marcaTiempo: number
+}
+
+/** Resultado completo de una ejecucion de codigo */
+export interface ResultadoEjecucion {
+  exito: boolean
+  salidas: EntradaConsola[]
+  duracionMs: number
+  /** Si fue interrumpido por timeout */
+  interrumpido?: boolean
 }
 
 // === TIPOS ESTADO GLOBAL ===

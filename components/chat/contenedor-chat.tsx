@@ -7,7 +7,7 @@ import { AreaChat } from "@/components/chat/area-chat"
 import { PantallaInicio } from "@/components/chat/pantalla-inicio"
 import { PanelArtefacto } from "@/components/chat/panel-artefacto"
 import { useArtefacto } from "@/lib/contexto-artefacto"
-import { enviarMensajeConStreaming } from "@/lib/cliente-chat"
+import { enviarMensajeConStreaming, enviarContinuacionConStreaming } from "@/lib/cliente-chat"
 import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { generarId, cn } from "@/lib/utils"
 import { countTokens } from "gpt-tokenizer/model/gpt-4o"
@@ -97,7 +97,47 @@ export function ContenedorChat() {
 
   const [mensajeError, establecerMensajeError] = useState<string | null>(null)
   const referenciaControlador = useRef<AbortController | null>(null)
-  const { artefactoActivo, cerrarArtefacto } = useArtefacto()
+  const { artefactoActivo, cerrarArtefacto, abrirYEjecutarArtefacto } = useArtefacto()
+
+  // --- Resize horizontal del panel de artefactos ---
+  const [anchoPanelPx, establecerAnchoPanelPx] = useState<number | null>(null)
+  const estaDragPanelRef = useRef(false)
+  const xInicialPanelRef = useRef(0)
+  const anchoInicialPanelRef = useRef(0)
+  const mainRef = useRef<HTMLElement>(null)
+
+  /** Inicia el drag para redimensionar el ancho del panel de artefactos */
+  const iniciarDragPanel = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    estaDragPanelRef.current = true
+    xInicialPanelRef.current = e.clientX
+    // Capturar el ancho actual del panel wrapper
+    const panelEl = (e.currentTarget as HTMLElement).parentElement
+    anchoInicialPanelRef.current = panelEl?.offsetWidth ?? 600
+
+    const moverDrag = (ev: MouseEvent) => {
+      if (!estaDragPanelRef.current) return
+      // Mover hacia la izquierda = panel más ancho (delta negativo en X)
+      const delta = xInicialPanelRef.current - ev.clientX
+      const anchoMain = mainRef.current?.offsetWidth ?? window.innerWidth
+      const maxAncho = Math.floor(anchoMain * 0.50) // max 50% del area principal
+      const nuevoAncho = Math.max(350, Math.min(maxAncho, anchoInicialPanelRef.current + delta))
+      establecerAnchoPanelPx(nuevoAncho)
+    }
+
+    const finDrag = () => {
+      estaDragPanelRef.current = false
+      document.removeEventListener("mousemove", moverDrag)
+      document.removeEventListener("mouseup", finDrag)
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
+    }
+
+    document.body.style.userSelect = "none"
+    document.body.style.cursor = "ew-resize"
+    document.addEventListener("mousemove", moverDrag)
+    document.addEventListener("mouseup", finDrag)
+  }, [])
 
   // Estado RAG: documentos procesados/en proceso
   const [documentosRAG, establecerDocumentosRAG] = useState<DocumentoRAGUI[]>([])
@@ -195,7 +235,7 @@ export function ContenedorChat() {
         })
       }
     )
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversacionActiva])
 
   // Eliminar un documento RAG al quitar el adjunto
@@ -245,8 +285,8 @@ export function ContenedorChat() {
       inicio++
       // Si acabamos de quitar un mensaje de usuario, quitar tambien la respuesta del asistente
       if (inicio < mensajes.length - 4 &&
-          mensajes[inicio - 1].rol === "usuario" &&
-          mensajes[inicio]?.rol === "asistente") {
+        mensajes[inicio - 1].rol === "usuario" &&
+        mensajes[inicio]?.rol === "asistente") {
         totalTokens -= contarTokensMensaje(mensajes[inicio].contenido)
         inicio++
       }
@@ -263,6 +303,7 @@ export function ContenedorChat() {
   // Helper compartido para enviar mensajes al modelo con streaming.
   // Recibe el historial YA con contexto RAG inyectado en el ultimo mensaje.
   // Calcula presupuesto dinamico considerando tokens RAG y trunca si es necesario.
+  // Soporta tool calls: si el modelo invoca ejecutar_codigo, ejecuta localmente y continua.
   async function enviarConsultaAlModelo(
     idConversacion: string,
     historialMensajes: Array<{ rol: "usuario" | "asistente"; contenido: string }>,
@@ -285,6 +326,143 @@ export function ContenedorChat() {
     let ultimaActualizacionUI = 0
     let textoRespuestaFinal = ""
     let resumenPensamientoAcumulado = ""
+
+    /** Maneja un tool call del modelo: ejecuta codigo localmente y continua el streaming.
+     *  Soporta encadenamiento: si el modelo hace otro tool call tras recibir el resultado,
+     *  se ejecuta recursivamente hasta que el modelo termine de generar texto.
+     *  Gestiona el ciclo de vida completo: typing indicator, texto final y titulo.
+     *  Limite de profundidad para evitar loops infinitos de tool calls encadenados. */
+    const MAX_TOOL_CALLS_ENCADENADOS = 5
+
+    async function manejarToolCall(nombre: string, argumentos: string, callId: string, idRespuesta: string, profundidad: number = 0) {
+      if (nombre !== "ejecutar_codigo") {
+        // Tool no reconocido: limpiar estado para evitar bloqueo permanente
+        establecerEscribiendo(false)
+        referenciaControlador.current = null
+        return
+      }
+
+      // Limite de recursion para evitar loops infinitos
+      if (profundidad >= MAX_TOOL_CALLS_ENCADENADOS) {
+        textoRespuestaFinal += "\n\n*Se alcanzo el limite de ejecuciones encadenadas.*\n\n"
+        actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+        establecerEscribiendo(false)
+        referenciaControlador.current = null
+        return
+      }
+
+      try {
+        const args = JSON.parse(argumentos) as { lenguaje: string; codigo: string }
+        const esPython = args.lenguaje === "python" || args.lenguaje === "py"
+
+        // 1. Indicador temporal en el chat (code fence con pseudo-lenguaje para UI premium)
+        textoRespuestaFinal += `\n\n\`\`\`ejecutando:${args.lenguaje}\n\`\`\`\n\n`
+        actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+
+        // 2. Abrir panel de artefactos + ejecutar (operacion atomica)
+        const artefacto = {
+          id: `ejecucion-${Date.now()}`,
+          tipo: "codigo" as const,
+          titulo: esPython ? "Python" : "JavaScript",
+          contenido: args.codigo,
+          lenguaje: args.lenguaje,
+          totalLineas: args.codigo.split("\n").length,
+        }
+        const resultado = await abrirYEjecutarArtefacto(artefacto)
+
+        // 3. Verificar si el usuario cancelo durante la ejecucion
+        if (controlador.signal.aborted) {
+          cerrarArtefacto()
+          establecerEscribiendo(false)
+          referenciaControlador.current = null
+          return
+        }
+
+        // 4. Formatear resultado
+        const salidasTexto = resultado?.salidas
+          .map((s) => s.tipo === "error" ? `Error: ${s.contenido}` : s.contenido)
+          .join("\n") ?? ""
+        const textoResultado = resultado?.exito
+          ? (salidasTexto || "(sin salida)")
+          : `Error de ejecucion:\n${salidasTexto}`
+        const estadoEjecucionTexto = resultado?.exito ? "exito" : "error"
+
+        // 5. Reemplazar indicador temporal con: tarjeta ejecutada + resultado
+        const marcador = esPython ? "# @ejecutado-por-modelo" : "// @ejecutado-por-modelo"
+        const salidasJSON = JSON.stringify(resultado?.salidas ?? [])
+        const duracion = Math.round(resultado?.duracionMs ?? 0)
+        const bloqueCodigo = `\`\`\`${args.lenguaje}\n${marcador} ${estadoEjecucionTexto} ${duracion} ${salidasJSON}\n${args.codigo}\n\`\`\``
+        // Resultados cortos (1-3 lineas) como inline markdown para que formulas/formato se rendericen.
+        // Resultados largos (4+ lineas) en code fence para legibilidad. Errores siempre en code fence.
+        const esMultilinea = salidasTexto.includes("\n") && salidasTexto.split("\n").length > 3
+        const bloqueResultado = resultado?.exito
+          ? esMultilinea
+            ? `**Resultado:**\n\`\`\`\n${salidasTexto}\n\`\`\``
+            : `**Resultado:** ${salidasTexto || "(sin salida)"}`
+          : `**Error de ejecucion:**\n\`\`\`\n${salidasTexto}\n\`\`\``
+        textoRespuestaFinal = textoRespuestaFinal.replace(
+          /```ejecutando:[^\n]*\n```\n\n/,
+          `${bloqueCodigo}\n\n${bloqueResultado}\n\n`
+        )
+        actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+
+        // 6. Cerrar panel despues de un breve delay (para que el usuario vea el resultado)
+        await new Promise(r => setTimeout(r, 800))
+        cerrarArtefacto()
+
+        // 7. Continuar streaming con el resultado del tool call
+        let ultimoTextoContinuacion = ""
+
+        await enviarContinuacionConStreaming({
+          idRespuesta,
+          callId,
+          resultado: textoResultado,
+          modelo: obtenerModeloSeleccionado(),
+          senalAborto: controlador.signal,
+          alActualizar: (textoContinuacion) => {
+            ultimoTextoContinuacion = textoContinuacion
+            const textoTotal = textoRespuestaFinal + textoContinuacion
+            const ahora = Date.now()
+            if (ahora - ultimaActualizacionUI >= INTERVALO_THROTTLE) {
+              actualizarUltimoMensaje(idConversacion, textoTotal)
+              ultimaActualizacionUI = ahora
+            }
+          },
+          alFinalizar: () => {
+            textoRespuestaFinal += ultimoTextoContinuacion
+            actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+            establecerEscribiendo(false)
+            referenciaControlador.current = null
+
+            if (debeGenerarTitulo && contenidoParaTitulo) {
+              generarTituloConversacion(idConversacion, contenidoParaTitulo, textoRespuestaFinal)
+            }
+          },
+          alError: (error) => {
+            if (textoRespuestaFinal) actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+            establecerMensajeError(error)
+            establecerEscribiendo(false)
+            referenciaControlador.current = null
+          },
+          alToolCall: (n, a, c, r) => {
+            textoRespuestaFinal += ultimoTextoContinuacion
+            ultimoTextoContinuacion = ""
+            return manejarToolCall(n, a, c, r, profundidad + 1)
+          },
+        })
+      } catch (errorToolCall) {
+        cerrarArtefacto()
+        const msgError = errorToolCall instanceof Error ? errorToolCall.message : "Error desconocido"
+        // Si habia indicador temporal, reemplazarlo con el error
+        textoRespuestaFinal = textoRespuestaFinal.replace(
+          /```ejecutando:[^\n]*\n```\n\n/,
+          `**Error al ejecutar codigo:** ${msgError}\n\n`
+        )
+        actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+        establecerEscribiendo(false)
+        referenciaControlador.current = null
+      }
+    }
 
     await enviarMensajeConStreaming({
       mensajes: historialFinal,
@@ -362,6 +540,7 @@ export function ContenedorChat() {
           resumen: resumenPensamientoAcumulado,
         })
       },
+      alToolCall: (n, a, c, r) => manejarToolCall(n, a, c, r, 0),
     })
   }
 
@@ -651,7 +830,7 @@ export function ContenedorChat() {
       />
 
       {/* Area principal: chat + panel artefacto */}
-      <main className="flex flex-1 min-w-0">
+      <main ref={mainRef} className="flex flex-1 min-w-0">
         {/* Chat: se oculta en mobile cuando hay artefacto abierto */}
         <div className={cn(
           "flex flex-col min-w-0 transition-all duration-300",
@@ -698,10 +877,21 @@ export function ContenedorChat() {
           )}
         </div>
 
-        {/* Panel artefacto: 45% en desktop, 100% en mobile */}
+        {/* Panel artefacto: redimensionable horizontalmente en desktop, 100% en mobile */}
         {artefactoActivo && (
-          <div className="w-full lg:w-[45%] lg:max-w-[700px] shrink-0 h-full">
-            <PanelArtefacto />
+          <div
+            className={cn("shrink-0 h-full relative flex", !anchoPanelPx && "w-full lg:w-[45%] lg:max-w-[700px]")}
+            style={anchoPanelPx ? { width: `${anchoPanelPx}px` } : undefined}
+          >
+            {/* Handle de drag horizontal — overlay interno en borde izquierdo, solo lg+ */}
+            <div
+              onMouseDown={iniciarDragPanel}
+              className="hidden lg:block absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-[var(--color-claude-input-border)] transition-colors z-10"
+              title="Arrastra para redimensionar"
+            />
+            <div className="flex-1 min-w-0 h-full">
+              <PanelArtefacto />
+            </div>
           </div>
         )}
       </main>

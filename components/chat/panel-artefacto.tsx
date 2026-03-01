@@ -1,12 +1,14 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { X, Copy, Check, Download, Eye, Code2, Pencil } from "lucide-react"
+import { X, Copy, Check, Download, Eye, Code2, Pencil, Play, Loader2, ChevronDown, ChevronUp } from "lucide-react"
 import { useArtefacto } from "@/lib/contexto-artefacto"
 import { useCopiarAlPortapapeles } from "@/lib/hooks"
 import { CodigoConResaltado, NOMBRES_LENGUAJE, EXTENSIONES_DESCARGA } from "./bloque-codigo"
 import { cn } from "@/lib/utils"
 import { RenderizadorMarkdown } from "./renderizador-markdown"
+import { esLenguajeEjecutable, validarImportsPython, detectarUsoInput } from "@/lib/ejecutor-codigo"
+import type { ResultadoEjecucion, EstadoEjecucion } from "@/lib/tipos"
 
 // Estilos sincronizados con oneLight de react-syntax-highlighter + estiloCodigoPanel
 // para que el textarea transparente se alinee pixel a pixel con el codigo resaltado
@@ -52,6 +54,150 @@ function inyectarHeartbeat(html: string): string {
     return html.replace(/<html[^>]*>/, "$&<head>" + SCRIPT_HEARTBEAT + "</head>")
   }
   return SCRIPT_HEARTBEAT + html
+}
+
+/** Colores por tipo de salida en la consola (tema claro, consistente con el panel) */
+const COLORES_CONSOLA: Record<string, string> = {
+  stdout: "text-[var(--color-claude-texto)]",
+  stderr: "text-amber-600",
+  resultado: "text-emerald-600",
+  error: "text-red-600",
+}
+
+/** Panel de resultados de ejecucion de codigo (tema claro) con resize vertical */
+function ConsolaResultados({
+  resultado,
+  estado,
+  estaAbierta,
+  alAlternar,
+}: {
+  resultado: ResultadoEjecucion | null
+  estado: EstadoEjecucion
+  estaAbierta: boolean
+  alAlternar: () => void
+}) {
+  const consolaRef = useRef<HTMLDivElement>(null)
+  const contenedorRef = useRef<HTMLDivElement>(null)
+  const estaActiva = estado === "cargando" || estado === "ejecutando"
+  const tieneSalida = resultado && resultado.salidas.length > 0
+
+  // Altura de la consola controlada por drag (px). null = altura automatica (max-h-64)
+  const [alturaConsola, establecerAlturaConsola] = useState<number | null>(null)
+  const estaDragRef = useRef(false)
+  const yInicialRef = useRef(0)
+  const alturaInicialRef = useRef(0)
+
+  // Auto-scroll al fondo cuando hay nueva salida
+  useEffect(() => {
+    if (consolaRef.current && estaAbierta) {
+      consolaRef.current.scrollTop = consolaRef.current.scrollHeight
+    }
+  }, [resultado?.salidas.length, estaAbierta])
+
+  /** Inicia el drag de resize de la consola */
+  const iniciarDragConsola = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    estaDragRef.current = true
+    yInicialRef.current = e.clientY
+    // Capturar la altura actual del contenido de la consola
+    alturaInicialRef.current = consolaRef.current?.offsetHeight ?? 256
+
+    const moverDrag = (ev: MouseEvent) => {
+      if (!estaDragRef.current) return
+      // Mover hacia arriba = aumenta la altura (delta negativo)
+      const delta = yInicialRef.current - ev.clientY
+      const panelAltura = contenedorRef.current?.closest(".flex.flex-col.h-full")?.clientHeight ?? 800
+      const maxAltura = Math.floor(panelAltura * 0.6) // max 60% del panel
+      const nuevaAltura = Math.max(60, Math.min(maxAltura, alturaInicialRef.current + delta))
+      establecerAlturaConsola(nuevaAltura)
+    }
+
+    const finDrag = () => {
+      estaDragRef.current = false
+      document.removeEventListener("mousemove", moverDrag)
+      document.removeEventListener("mouseup", finDrag)
+      document.body.style.userSelect = ""
+      document.body.style.cursor = ""
+    }
+
+    document.body.style.userSelect = "none"
+    document.body.style.cursor = "ns-resize"
+    document.addEventListener("mousemove", moverDrag)
+    document.addEventListener("mouseup", finDrag)
+  }, [])
+
+  if (!estaActiva && !tieneSalida) return null
+
+  return (
+    <div ref={contenedorRef} className="shrink min-h-0 flex flex-col">
+      {/* Handle de drag resize — borde superior, arrastrar hacia arriba para agrandar */}
+      <div
+        onMouseDown={iniciarDragConsola}
+        className="h-1 cursor-ns-resize bg-[var(--color-claude-input-border)] hover:bg-[var(--color-claude-texto-secundario)]/30 transition-colors shrink-0"
+        title="Arrastra para redimensionar"
+      />
+      {/* Barra de estado/toggle */}
+      <button
+        onClick={alAlternar}
+        className="flex items-center justify-between w-full px-4 py-1.5 bg-[var(--color-claude-sidebar)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors text-xs shrink-0"
+      >
+        <span className="flex items-center gap-1.5 text-[var(--color-claude-texto-secundario)]">
+          {estaActiva ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {estado === "cargando" ? "Cargando Python..." : "Ejecutando..."}
+            </>
+          ) : (
+            <>
+              <span className={resultado?.exito ? "text-emerald-600" : "text-red-600"}>●</span>
+              {resultado?.interrumpido
+                ? "Timeout"
+                : resultado?.exito ? "Completado" : "Error"}
+              <span className="text-[var(--color-claude-texto-secundario)] ml-1">
+                {resultado?.duracionMs !== undefined && `${Math.round(resultado.duracionMs)}ms`}
+              </span>
+            </>
+          )}
+        </span>
+        {tieneSalida && (
+          estaAbierta
+            ? <ChevronDown className="h-3 w-3 text-[var(--color-claude-texto-secundario)]" />
+            : <ChevronUp className="h-3 w-3 text-[var(--color-claude-texto-secundario)]" />
+        )}
+      </button>
+
+      {/* Contenido de la consola */}
+      {estaAbierta && (tieneSalida || estaActiva) && (
+        <div
+          ref={consolaRef}
+          className="px-4 py-1.5 bg-[var(--color-claude-sidebar)] overflow-y-auto font-mono text-xs leading-snug scrollbar-oculto"
+          style={alturaConsola !== null ? { height: `${alturaConsola}px` } : { maxHeight: "16rem" }}
+        >
+          {resultado?.salidas.map((salida, i) => (
+            <div key={i} className={COLORES_CONSOLA[salida.tipo] ?? "text-[var(--color-claude-texto)]"}>
+              {salida.tipo === "imagen" ? (
+                <img
+                  src={salida.contenido}
+                  alt={`Grafico ${i + 1}`}
+                  className="max-w-full rounded my-1"
+                  style={{ maxHeight: "400px" }}
+                />
+              ) : (
+                <>
+                  {salida.tipo === "resultado" && <span className="text-[var(--color-claude-texto-secundario)]">{"=> "}</span>}
+                  {salida.tipo === "stderr" && <span className="text-amber-700">stderr: </span>}
+                  {salida.contenido}
+                </>
+              )}
+            </div>
+          ))}
+          {estaActiva && !tieneSalida && (
+            <div className="text-[var(--color-claude-texto-secundario)] animate-pulse">Esperando salida...</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** Vista previa sandboxed para HTML y SVG con deteccion de bloqueos */
@@ -222,10 +368,11 @@ function convertirLatexAMarkdown(latex: string): string {
  *  el codigo resaltado, manteniendo syntax highlighting mientras el usuario escribe. */
 export function PanelArtefacto() {
   // === Todos los hooks primero (antes de cualquier return condicional) ===
-  const { artefactoActivo, cerrarArtefacto, guardarEdicionUsuario } = useArtefacto()
+  const { artefactoActivo, cerrarArtefacto, guardarEdicionUsuario, estadoEjecucion, resultadoEjecucion, ejecutarArtefacto } = useArtefacto()
   const { haCopiado, copiar } = useCopiarAlPortapapeles()
   const [modoVistaPrevia, establecerModoVistaPrevia] = useState(false)
   const [modoEdicion, establecerModoEdicion] = useState(false)
+  const [consolaAbierta, establecerConsolaAbierta] = useState(true)
   // Buffer local de edicion: desacoplado del contexto para evitar que el sync effect
   // de BloqueCodigoConResaltado revierta las ediciones del usuario (patron react-simple-code-editor)
   const [contenidoEditado, establecerContenidoEditado] = useState<string | null>(null)
@@ -240,6 +387,13 @@ export function PanelArtefacto() {
   useEffect(() => {
     if (contenedorRef.current) contenedorRef.current.scrollTop = 0
   }, [artefactoActivo?.id])
+
+  // Auto-abrir consola cuando llegan resultados nuevos
+  useEffect(() => {
+    if (resultadoEjecucion && resultadoEjecucion.salidas.length > 0) {
+      establecerConsolaAbierta(true)
+    }
+  }, [resultadoEjecucion])
 
   // Restablecer modos al cambiar de artefacto (patron "ajustar estado durante render"):
   // markdown, svg, html, latex: preview por defecto; codigo: codigo por defecto
@@ -261,6 +415,12 @@ export function PanelArtefacto() {
   const contenidoActual = contenidoEditado ?? contenido
   const nombreLenguaje = lenguaje ? (NOMBRES_LENGUAJE[lenguaje] ?? lenguaje) : tipo
   const tieneVistaPrevia = tipo === "html" || tipo === "svg" || tipo === "markdown" || tipo === "latex"
+  const esPythonLenguaje = !!lenguaje && (lenguaje === "python" || lenguaje === "py")
+  const tieneImportsInvalidos = esPythonLenguaje && validarImportsPython(contenidoActual).length > 0
+  const tieneInput = esPythonLenguaje && detectarUsoInput(contenidoActual)
+  // Ocultar boton Ejecutar completamente si: imports invalidos o usa input()
+  const esEjecutable = !!lenguaje && esLenguajeEjecutable(lenguaje) && !tieneImportsInvalidos && !tieneInput
+  const estaEjecutando = estadoEjecucion === "ejecutando" || estadoEjecucion === "cargando"
 
   function manejarDescarga() {
     const extension = lenguaje
@@ -317,6 +477,33 @@ export function PanelArtefacto() {
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
+          {/* Botón Ejecutar (solo lenguajes ejecutables) */}
+          {esEjecutable && (
+            <button
+              onClick={ejecutarArtefacto}
+              disabled={estaEjecutando}
+              className={cn(
+                "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors",
+                estaEjecutando
+                  ? "text-[var(--color-claude-texto-secundario)] opacity-60"
+                  : "text-emerald-600 hover:text-emerald-700 hover:bg-[var(--color-claude-sidebar-hover)]"
+              )}
+              title={estaEjecutando ? "Ejecutando..." : "Ejecutar código"}
+            >
+              {estaEjecutando ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span className="hidden sm:inline">{estadoEjecucion === "cargando" ? "Cargando..." : "Ejecutando..."}</span>
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Ejecutar</span>
+                </>
+              )}
+            </button>
+          )}
+
           {/* Botón Editar */}
           <button
             onClick={alternarEdicion}
@@ -427,6 +614,16 @@ export function PanelArtefacto() {
           )}
         </div>
       </div>
+
+      {/* Consola de resultados de ejecucion (tema claro, solo si hay resultado o esta activo) */}
+      {esEjecutable && (
+        <ConsolaResultados
+          resultado={resultadoEjecucion}
+          estado={estadoEjecucion}
+          estaAbierta={consolaAbierta}
+          alAlternar={() => establecerConsolaAbierta(!consolaAbierta)}
+        />
+      )}
     </div>
   )
 }

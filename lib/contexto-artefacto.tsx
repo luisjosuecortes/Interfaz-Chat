@@ -1,7 +1,8 @@
 "use client"
 
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react"
-import type { Artefacto } from "./tipos"
+import { createContext, useContext, useState, useCallback, useRef, useMemo, type ReactNode } from "react"
+import type { Artefacto, ResultadoEjecucion, EstadoEjecucion } from "./tipos"
+import { ejecutarCodigo, esLenguajeEjecutable, obtenerEstadoPyodide } from "./ejecutor-codigo"
 
 // Valor que expone el contexto de artefactos a toda la aplicación
 interface ValorContextoArtefacto {
@@ -19,6 +20,16 @@ interface ValorContextoArtefacto {
   actualizarContenidoArtefacto: (nuevoContenido: string, totalLineas: number) => void
   /** Guarda ediciones del usuario y marca el artefacto como editado */
   guardarEdicionUsuario: (nuevoContenido: string, totalLineas: number) => void
+  /** Estado de ejecucion del artefacto activo */
+  estadoEjecucion: EstadoEjecucion
+  /** Resultado de la ultima ejecucion del artefacto activo */
+  resultadoEjecucion: ResultadoEjecucion | null
+  /** Ejecuta el codigo del artefacto activo */
+  ejecutarArtefacto: () => Promise<void>
+  /** Abre el artefacto en el panel y ejecuta su codigo en una operacion atomica.
+   *  Evita el bug de reset de estado que ocurre al llamar abrirArtefacto + ejecutarArtefacto por separado.
+   *  Retorna el resultado de la ejecucion (o null si falla). */
+  abrirYEjecutarArtefacto: (artefacto: Artefacto) => Promise<ResultadoEjecucion | null>
 }
 
 const ContextoArtefacto = createContext<ValorContextoArtefacto>({
@@ -29,25 +40,54 @@ const ContextoArtefacto = createContext<ValorContextoArtefacto>({
   cerrarArtefacto: () => { },
   actualizarContenidoArtefacto: () => { },
   guardarEdicionUsuario: () => { },
+  estadoEjecucion: "inactivo",
+  resultadoEjecucion: null,
+  ejecutarArtefacto: async () => { },
+  abrirYEjecutarArtefacto: async () => null,
 })
 
 /**
  * Proveedor del sistema de artefactos.
  * Envuelve la app para permitir que BloqueCodigoConResaltado abra el panel lateral
  * y que ContenedorChat/PanelArtefacto reaccionen al artefacto activo.
+ * Tambien gestiona el estado de ejecucion de codigo del artefacto activo.
  */
 export function ProveedorArtefacto({ children }: { children: ReactNode }) {
   const [artefactoActivo, establecerArtefactoActivo] = useState<Artefacto | null>(null)
   const [editadoPorUsuario, establecerEditadoPorUsuario] = useState(false)
+  const [estadoEjecucion, establecerEstadoEjecucion] = useState<EstadoEjecucion>("inactivo")
+  const [resultadoEjecucion, establecerResultadoEjecucion] = useState<ResultadoEjecucion | null>(null)
+
+  // Ref para proteger la ejecucion externa (tool call del modelo) de interferencia.
+  // Cuando es true, abrirArtefacto se convierte en no-op para evitar que el auto-open
+  // de bloque-codigo.tsx resetee el estado de ejecucion en curso.
+  const refEjecucionExterna = useRef(false)
 
   const abrirArtefacto = useCallback((artefacto: Artefacto) => {
-    establecerArtefactoActivo(artefacto)
+    // No interrumpir ejecucion externa (tool call del modelo en curso)
+    if (refEjecucionExterna.current) return
+    // Solo actualizar si es un artefacto diferente (evita re-renders durante streaming
+    // donde el mismo artefacto se abre repetidamente con contenido actualizado)
+    establecerArtefactoActivo(prev => {
+      if (prev?.id === artefacto.id) return prev
+      return artefacto
+    })
     establecerEditadoPorUsuario(false)
+    // Restaurar resultado previo si el artefacto ya fue ejecutado (ej: TarjetaEjecucion)
+    if (artefacto.resultadoPrevio) {
+      establecerResultadoEjecucion(artefacto.resultadoPrevio)
+      establecerEstadoEjecucion(artefacto.resultadoPrevio.exito ? "completado" : "error")
+    } else {
+      establecerEstadoEjecucion("inactivo")
+      establecerResultadoEjecucion(null)
+    }
   }, [])
 
   const cerrarArtefacto = useCallback(() => {
     establecerArtefactoActivo(null)
     establecerEditadoPorUsuario(false)
+    establecerEstadoEjecucion("inactivo")
+    establecerResultadoEjecucion(null)
   }, [])
 
   /** Actualiza contenido del artefacto activo sin reemplazar el objeto completo.
@@ -70,10 +110,80 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     establecerEditadoPorUsuario(true)
   }, [])
 
+  /** Ejecuta el codigo del artefacto activo usando el motor de ejecucion local.
+   *  Lee el contenido y lenguaje actuales del artefacto (incluyendo ediciones del usuario). */
+  const ejecutarArtefacto = useCallback(async () => {
+    // Leer el artefacto actual del estado al momento de la ejecucion
+    const artefacto = artefactoActivo
+    if (!artefacto || !artefacto.lenguaje || !esLenguajeEjecutable(artefacto.lenguaje)) return
+    if (estadoEjecucion === "ejecutando" || estadoEjecucion === "cargando") return
+
+    // Determinar estado inicial segun lenguaje
+    const esPython = artefacto.lenguaje === "python" || artefacto.lenguaje === "py"
+    const estadoPyodideActual = esPython ? obtenerEstadoPyodide() : "listo"
+    establecerEstadoEjecucion(estadoPyodideActual !== "listo" && esPython ? "cargando" : "ejecutando")
+    establecerResultadoEjecucion(null)
+
+    try {
+      const resultado = await ejecutarCodigo(artefacto.contenido, artefacto.lenguaje)
+      establecerResultadoEjecucion(resultado)
+      establecerEstadoEjecucion(resultado.exito ? "completado" : "error")
+    } catch {
+      establecerEstadoEjecucion("error")
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artefactoActivo?.contenido, artefactoActivo?.lenguaje, estadoEjecucion])
+
+  /** Abre el artefacto en el panel y ejecuta su codigo en una operacion atomica.
+   *  Usa refEjecucionExterna para evitar que el auto-open de bloque-codigo.tsx
+   *  resetee el estado de ejecucion mientras el tool call esta en curso.
+   *  Retorna el resultado de la ejecucion (o null si falla). */
+  const abrirYEjecutarArtefacto = useCallback(async (artefacto: Artefacto): Promise<ResultadoEjecucion | null> => {
+    if (!artefacto.lenguaje || !esLenguajeEjecutable(artefacto.lenguaje)) return null
+
+    refEjecucionExterna.current = true
+
+    // Abrir artefacto sin resetear ejecucion (refEjecucionExterna protege)
+    establecerArtefactoActivo(artefacto)
+    establecerEditadoPorUsuario(false)
+
+    // Iniciar ejecucion
+    const esPython = artefacto.lenguaje === "python" || artefacto.lenguaje === "py"
+    const estadoInicial = esPython && obtenerEstadoPyodide() !== "listo" ? "cargando" : "ejecutando"
+    establecerEstadoEjecucion(estadoInicial)
+    establecerResultadoEjecucion(null)
+
+    try {
+      const resultado = await ejecutarCodigo(artefacto.contenido, artefacto.lenguaje)
+      establecerResultadoEjecucion(resultado)
+      establecerEstadoEjecucion(resultado.exito ? "completado" : "error")
+      return resultado
+    } catch {
+      establecerEstadoEjecucion("error")
+      return null
+    } finally {
+      refEjecucionExterna.current = false
+    }
+  }, [])
+
+  const valorContexto = useMemo(() => ({
+    estaDisponible: true,
+    artefactoActivo,
+    editadoPorUsuario,
+    abrirArtefacto,
+    cerrarArtefacto,
+    actualizarContenidoArtefacto,
+    guardarEdicionUsuario,
+    estadoEjecucion,
+    resultadoEjecucion,
+    ejecutarArtefacto,
+    abrirYEjecutarArtefacto,
+  }), [artefactoActivo, editadoPorUsuario, estadoEjecucion, resultadoEjecucion,
+       abrirArtefacto, cerrarArtefacto, actualizarContenidoArtefacto,
+       guardarEdicionUsuario, ejecutarArtefacto, abrirYEjecutarArtefacto])
+
   return (
-    <ContextoArtefacto.Provider
-      value={{ estaDisponible: true, artefactoActivo, editadoPorUsuario, abrirArtefacto, cerrarArtefacto, actualizarContenidoArtefacto, guardarEdicionUsuario }}
-    >
+    <ContextoArtefacto.Provider value={valorContexto}>
       {children}
     </ContextoArtefacto.Provider>
   )

@@ -178,7 +178,7 @@ const pluginsRehype = [[rehypeKatex, opcionesKatex]] as Parameters<typeof ReactM
 const componentesMarkdown: Components = {
   // Bloques de codigo e inline code
   code({ children, className, node, ...resto }) {
-    const coincidenciaLenguaje = /language-(\w+)/.exec(className || "")
+    const coincidenciaLenguaje = /language-([\w:.+-]+)/.exec(className || "")
 
     // Si tiene clase de lenguaje, es un bloque de codigo (fenced)
     if (coincidenciaLenguaje) {

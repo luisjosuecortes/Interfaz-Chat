@@ -9,6 +9,7 @@ import { BurbujaMensaje } from "@/components/chat/burbuja-mensaje"
 import { EntradaMensaje } from "@/components/chat/entrada-mensaje"
 import { AvatarAsistente } from "@/components/ui/icono-sparkle"
 import { useScrollAlFondo } from "@/lib/hooks"
+import { useArtefacto } from "@/lib/contexto-artefacto"
 
 interface PropiedadesAreaChat {
   conversacion: Conversacion
@@ -56,6 +57,7 @@ export function AreaChat({
   alLimpiarArchivosExternos,
 }: PropiedadesAreaChat) {
   const { contenedorRef, irAlFondo } = useScrollAlFondo()
+  const { artefactoActivo } = useArtefacto()
   const referenciaInputTitulo = useRef<HTMLInputElement>(null)
   const [estaEditandoTitulo, establecerEstaEditandoTitulo] = useState(false)
   const [tituloEdicion, establecerTituloEdicion] = useState("")
@@ -97,8 +99,10 @@ export function AreaChat({
 
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden relative">
-      {/* Barra superior flotante: boton sidebar + titulo */}
-      <div className="absolute top-3 left-3 z-20 flex items-center gap-1">
+      {/* Barra superior flotante: boton sidebar + titulo.
+          Se oculta cuando el panel de artefactos esta abierto para evitar
+          solapamiento visual (en lg: ambos paneles coexisten). */}
+      <div className={`absolute top-3 left-3 z-20 flex items-center gap-1 transition-opacity duration-200 ${artefactoActivo ? "lg:opacity-0 lg:pointer-events-none" : ""}`}>
         {!estaBarraLateralAbierta && (
           <Tooltip>
             <TooltipTrigger asChild>

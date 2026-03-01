@@ -21,6 +21,10 @@ interface OpcionesEnvio {
   alPensamientoIniciado?: () => void
   alPensamientoDelta?: (delta: string) => void
   alPensamientoCompletado?: () => void
+  /** Callback cuando el modelo invoca una herramienta (function calling).
+   *  Puede ser async: el stream await la Promise para capturar errores y
+   *  evitar que manejarToolCall quede como fire-and-forget desconectado. */
+  alToolCall?: (nombre: string, argumentos: string, callId: string, idRespuesta: string) => void | Promise<void>
 }
 
 export async function enviarMensajeConStreaming({
@@ -38,6 +42,7 @@ export async function enviarMensajeConStreaming({
   alPensamientoIniciado,
   alPensamientoDelta,
   alPensamientoCompletado,
+  alToolCall,
 }: OpcionesEnvio): Promise<void> {
   try {
     const respuesta = await fetch("/api/chat", {
@@ -129,6 +134,24 @@ export async function enviarMensajeConStreaming({
               case "pensamiento_completado":
                 alPensamientoCompletado?.()
                 break
+
+              // Tool calling (function calling del modelo)
+              case "tool_call":
+                if (parseado.nombre && parseado.argumentos && parseado.callId && parseado.idRespuesta) {
+                  // await: toda la cadena de tool calls (ejecucion + continuacion + encadenamientos)
+                  // corre DENTRO de este contexto. Si falla, propaga al catch externo que llama alFinalizar.
+                  await alToolCall?.(
+                    parseado.nombre as string,
+                    parseado.argumentos as string,
+                    parseado.callId as string,
+                    parseado.idRespuesta as string,
+                  )
+                } else {
+                  console.warn("[cliente-chat] Tool call con campos faltantes:", parseado)
+                  // Limpiar estado: sin campos validos no se puede ejecutar el tool call
+                  alFinalizar()
+                }
+                return
             }
           } catch {
             // Ignorar lineas que no son JSON valido
@@ -161,6 +184,116 @@ export async function enviarMensajeConStreaming({
     alFinalizar()
   } catch (error) {
     // Si fue cancelacion intencional, no mostrar error
+    if (error instanceof DOMException && error.name === "AbortError") {
+      alFinalizar()
+      return
+    }
+    alError("Error de conexion. Verifica tu conexion a internet.")
+    alFinalizar()
+  }
+}
+
+/** Opciones para enviar resultado de tool call y continuar streaming */
+interface OpcionesContinuacion {
+  idRespuesta: string
+  callId: string
+  resultado: string
+  modelo: string
+  senalAborto?: AbortSignal
+  alActualizar: (textoActual: string) => void
+  alFinalizar: () => void
+  alError: (error: string) => void
+  alToolCall?: (nombre: string, argumentos: string, callId: string, idRespuesta: string) => void | Promise<void>
+}
+
+/** Envia el resultado de un tool call al backend para que el modelo continue generando.
+ *  Reutiliza el mismo patron de streaming SSE que enviarMensajeConStreaming. */
+export async function enviarContinuacionConStreaming({
+  idRespuesta,
+  callId,
+  resultado,
+  modelo,
+  senalAborto,
+  alActualizar,
+  alFinalizar,
+  alError,
+  alToolCall,
+}: OpcionesContinuacion): Promise<void> {
+  try {
+    const respuesta = await fetch("/api/chat/continuar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idRespuesta, callId, resultado, modelo }),
+      signal: senalAborto,
+    })
+
+    if (!respuesta.ok) {
+      const datosError = await respuesta.json()
+      alError(datosError.error || "Error al continuar la respuesta")
+      alFinalizar()
+      return
+    }
+
+    const lector = respuesta.body?.getReader()
+    if (!lector) {
+      alError("No se pudo leer la respuesta del servidor")
+      alFinalizar()
+      return
+    }
+
+    const decodificador = new TextDecoder()
+    let textoAcumulado = ""
+    let bufferIncompleto = ""
+
+    while (true) {
+      const { done, value } = await lector.read()
+      if (done) break
+
+      bufferIncompleto += decodificador.decode(value, { stream: true })
+      const lineas = bufferIncompleto.split("\n")
+      bufferIncompleto = lineas.pop() || ""
+
+      for (const linea of lineas) {
+        if (linea.startsWith("data: ")) {
+          const datos = linea.slice(6).trim()
+
+          if (datos === "[FIN]") {
+            alFinalizar()
+            return
+          }
+
+          try {
+            const parseado = JSON.parse(datos)
+
+            if (parseado.contenido) {
+              textoAcumulado += parseado.contenido
+              alActualizar(textoAcumulado)
+              continue
+            }
+
+            if (parseado.tipo === "tool_call") {
+              if (parseado.nombre && parseado.argumentos && parseado.callId && parseado.idRespuesta) {
+                await alToolCall?.(
+                  parseado.nombre as string,
+                  parseado.argumentos as string,
+                  parseado.callId as string,
+                  parseado.idRespuesta as string,
+                )
+              } else {
+                console.warn("[cliente-chat] Tool call continuacion con campos faltantes:", parseado)
+                alFinalizar()
+              }
+              return
+            }
+          } catch {
+            // Ignorar lineas que no son JSON valido
+          }
+        }
+      }
+    }
+
+    alFinalizar()
+  } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       alFinalizar()
       return

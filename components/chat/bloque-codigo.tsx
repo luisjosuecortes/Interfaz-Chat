@@ -1,13 +1,15 @@
 "use client"
 
-import { Copy, Check, FileCode2, FileText, Globe, Image, ChevronRight, Sigma } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { Copy, Check, FileCode2, FileText, Globe, Image, ChevronRight, Sigma, Play, Terminal, Loader2 } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
 import { useCopiarAlPortapapeles } from "@/lib/hooks"
 import { useArtefacto } from "@/lib/contexto-artefacto"
-import type { TipoArtefacto } from "@/lib/tipos"
+import type { TipoArtefacto, ResultadoEjecucion, EntradaConsola } from "@/lib/tipos"
 import { PrismLight as ResaltadorSintaxis } from "react-syntax-highlighter"
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { useMensaje } from "@/lib/contexto-mensaje"
+import { esLenguajeEjecutable, validarImportsPython, detectarUsoInput } from "@/lib/ejecutor-codigo"
+import { cn } from "@/lib/utils"
 
 // Importar lenguajes necesarios
 import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript"
@@ -342,6 +344,91 @@ function TarjetaArtefacto({ tipo, lenguaje, totalLineas, titulo, alAbrir }: Prop
   )
 }
 
+/** Indicador visual de ejecucion de codigo en progreso.
+ *  Se renderiza cuando el pseudo-lenguaje "ejecutando:..." aparece en un code fence.
+ *  Misma estructura visual que TarjetaEjecucion pero con estado "ejecutando". */
+function IndicadorEjecucion({ lenguaje }: { lenguaje: string }) {
+  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+  return (
+    <div className="my-3 flex items-center gap-3 w-full max-w-md rounded-xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-sidebar)] px-4 py-3 indicador-ejecutando">
+      <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-[#1e1e1e] text-gray-300 shrink-0">
+        <Loader2 className="h-5 w-5 animate-spin" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-[var(--color-claude-texto)] truncate flex items-center gap-2">
+          {nombreLenguaje}
+          <span className="text-xs text-[var(--color-claude-texto-secundario)] flex items-center gap-1">
+            <span className="text-blue-500">●</span>
+            Ejecutando
+          </span>
+        </div>
+        <div className="text-xs text-[var(--color-claude-texto-secundario)]">
+          Procesando codigo del modelo
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Tarjeta para bloques ejecutados por el modelo via tool calling.
+ *  Diseno neutral consistente con TarjetaArtefacto: fondo sidebar, icono dark, estado sutil.
+ *  Click abre el artefacto en el panel lateral con resultado de ejecucion restaurado. */
+function TarjetaEjecucion({
+  lenguaje,
+  codigo,
+  totalLineas,
+  posicionOrigen,
+  estadoEjecucion,
+  resultadoPrevio,
+}: {
+  lenguaje: string
+  codigo: string
+  totalLineas: number
+  posicionOrigen: number
+  estadoEjecucion?: "exito" | "error"
+  resultadoPrevio?: ResultadoEjecucion
+}) {
+  const { abrirArtefacto } = useArtefacto()
+  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+  const esError = estadoEjecucion === "error"
+
+  function abrirCodigo() {
+    abrirArtefacto({
+      id: generarIdArtefacto(codigo, posicionOrigen),
+      tipo: "codigo",
+      titulo: `${nombreLenguaje} ejecutado`,
+      contenido: codigo,
+      lenguaje,
+      totalLineas,
+      resultadoPrevio,
+    })
+  }
+
+  return (
+    <button
+      onClick={abrirCodigo}
+      className="my-3 flex items-center gap-3 w-full max-w-md rounded-xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-sidebar)] hover:bg-[var(--color-claude-sidebar-hover)] px-4 py-3 transition-colors cursor-pointer text-left group"
+    >
+      <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-[#1e1e1e] text-gray-300 shrink-0">
+        <Terminal className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-[var(--color-claude-texto)] truncate flex items-center gap-2">
+          {nombreLenguaje}
+          <span className="text-xs text-[var(--color-claude-texto-secundario)] flex items-center gap-1">
+            <span className={esError ? "text-red-500" : "text-emerald-500"}>●</span>
+            {esError ? "Error" : "Ejecutado"}
+          </span>
+        </div>
+        <div className="text-xs text-[var(--color-claude-texto-secundario)]">
+          {totalLineas} lineas · Codigo del modelo
+        </div>
+      </div>
+      <ChevronRight className="h-4 w-4 text-[var(--color-claude-texto-secundario)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+    </button>
+  )
+}
+
 // === Props y estilos ===
 
 interface PropiedadesBloqueCodigo {
@@ -374,33 +461,59 @@ const estiloCodigoInline = {
 // === Componente principal: bloque de código con resaltado ===
 
 export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefacto, posicionOrigen }: PropiedadesBloqueCodigo) {
+  // === TODOS los hooks primero (antes de cualquier return condicional) ===
+  // React requiere que los hooks se llamen en el mismo orden en cada render.
+  // Si algun early return va antes de un hook, React crashea con
+  // "Rendered fewer hooks than expected" cuando el contenido cambia durante streaming.
+
   const { haCopiado, copiar } = useCopiarAlPortapapeles()
-  const { estaDisponible, abrirArtefacto, artefactoActivo, actualizarContenidoArtefacto, editadoPorUsuario } = useArtefacto()
+  const { estaDisponible, abrirArtefacto, artefactoActivo, actualizarContenidoArtefacto, editadoPorUsuario, abrirYEjecutarArtefacto } = useArtefacto()
   const contextoMensaje = useMensaje()
+
+  // Variables derivadas necesarias para los hooks que siguen
   const estaGenerandose = contextoMensaje?.estaGenerandose ?? false
-  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
   const totalLineas = codigo.split("\n").length
+  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+  const esArtefactoValido = !deshabilitarArtefacto && estaDisponible && debeSerArtefacto(codigo, lenguaje, totalLineas)
+
+  /** Abre el artefacto en el panel lateral y ejecuta el codigo ahi.
+   *  Usa abrirYEjecutarArtefacto (operacion atomica) para evitar race conditions
+   *  entre el montaje del panel y la lectura del estado de React. */
+  const manejarEjecutarEnArtefacto = useCallback(() => {
+    abrirYEjecutarArtefacto({
+      id: generarIdArtefacto(codigo, posicionOrigen ?? 0),
+      tipo: determinarTipo(lenguaje, codigo),
+      titulo: inferirTitulo(codigo, lenguaje),
+      contenido: codigo,
+      lenguaje,
+      totalLineas,
+    })
+  }, [codigo, lenguaje, totalLineas, posicionOrigen, abrirYEjecutarArtefacto])
 
   // Generar ID solo una vez al montar el código. Mezcla posicion del bloque en el markdown
   // para que dos bloques con contenido identico pero en posiciones distintas tengan IDs diferentes.
   const [idArtefacto] = useState(() => generarIdArtefacto(codigo, posicionOrigen ?? 0))
 
-  const esArtefactoValido = !deshabilitarArtefacto && estaDisponible && debeSerArtefacto(codigo, lenguaje, totalLineas)
-
-  // Auto-abrir artefacto durante streaming (solo la primera vez que se genera)
+  // Auto-abrir artefacto durante streaming (solo la primera vez que se genera).
+  // Gate: solo se dispara UNA VEZ cuando esArtefactoValido transiciona a true.
+  // Esto evita que el effect dispare abrirArtefacto en cada tick de streaming
+  // (lo que causaba "Maximum update depth exceeded" por crear objetos nuevos cada vez).
+  // Es no-op para bloques con marcador de ejecucion porque esArtefactoValido sera false.
+  const [yaAbiertoAutoRef] = useState(() => ({ current: false }))
   useEffect(() => {
-    if (estaGenerandose && esArtefactoValido) {
-      const titulo = inferirTitulo(codigo, lenguaje)
+    if (estaGenerandose && esArtefactoValido && !yaAbiertoAutoRef.current) {
+      yaAbiertoAutoRef.current = true
       abrirArtefacto({
         id: idArtefacto,
         tipo: determinarTipo(lenguaje, codigo),
-        titulo,
+        titulo: inferirTitulo(codigo, lenguaje),
         contenido: codigo,
         lenguaje,
         totalLineas,
       })
     }
-  }, [estaGenerandose, esArtefactoValido, codigo, lenguaje, totalLineas, idArtefacto, abrirArtefacto])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estaGenerandose, esArtefactoValido])
 
   // Sync en tiempo real: si el panel muestra este artefacto y el código cambió (streaming), actualizar.
   // NO sincronizar si el usuario editó el artefacto manualmente (editadoPorUsuario = true).
@@ -409,6 +522,53 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
       actualizarContenidoArtefacto(codigo, totalLineas)
     }
   }, [codigo, totalLineas, artefactoActivo?.id, artefactoActivo?.contenido, idArtefacto, actualizarContenidoArtefacto, editadoPorUsuario])
+
+  // === Early returns (todos los hooks ya fueron llamados) ===
+
+  // Indicador de ejecucion en progreso (pseudo-lenguaje inyectado por contenedor-chat)
+  if (lenguaje.startsWith("ejecutando:")) {
+    return <IndicadorEjecucion lenguaje={lenguaje.slice(11)} />
+  }
+
+  // Detectar bloques ejecutados por el modelo (tool calling).
+  // Primera linea: "# @ejecutado-por-modelo exito|error duracionMs salidasJSON"
+  const REGEX_MARCADOR_EJECUCION = /^(?:# |\/\/ )@ejecutado-por-modelo(?:\s+(exito|error))?(?:\s+(\d+)\s+(.+))?$/
+  const primeraLinea = codigo.split("\n")[0]
+  const coincidenciaMarcador = REGEX_MARCADOR_EJECUCION.exec(primeraLinea)
+
+  if (coincidenciaMarcador) {
+    const estadoEjecucionMarcador = coincidenciaMarcador[1] as "exito" | "error" | undefined
+    const codigoReal = codigo.split("\n").slice(1).join("\n")
+    const lineasReales = codigoReal.split("\n").length
+
+    // Reconstruir resultado previo desde datos serializados en el marcador
+    const duracionMs = coincidenciaMarcador[2] ? parseInt(coincidenciaMarcador[2]) : 0
+    let salidasPrevias: EntradaConsola[] = []
+    if (coincidenciaMarcador[3]) {
+      try { salidasPrevias = JSON.parse(coincidenciaMarcador[3]) } catch { /* marcador sin datos validos */ }
+    }
+    const resultadoPrevio: ResultadoEjecucion | undefined = estadoEjecucionMarcador
+      ? { exito: estadoEjecucionMarcador === "exito", salidas: salidasPrevias, duracionMs }
+      : undefined
+
+    return (
+      <TarjetaEjecucion
+        lenguaje={lenguaje}
+        codigo={codigoReal}
+        totalLineas={lineasReales}
+        posicionOrigen={posicionOrigen ?? 0}
+        estadoEjecucion={estadoEjecucionMarcador}
+        resultadoPrevio={resultadoPrevio}
+      />
+    )
+  }
+
+  // Validar imports para Python: ocultar boton Ejecutar si hay paquetes no disponibles o usa input()
+  const esPythonLenguaje = lenguaje === "python" || lenguaje === "py"
+  const tieneImportsInvalidos = esPythonLenguaje && validarImportsPython(codigo).length > 0
+  const tieneInput = esPythonLenguaje && detectarUsoInput(codigo)
+  // Ocultar boton completamente si: lenguaje no ejecutable, imports invalidos, o usa input()
+  const esEjecutable = esLenguajeEjecutable(lenguaje) && !tieneImportsInvalidos && !tieneInput
 
   // Si califica como artefacto y el sistema está habilitado, mostrar tarjeta
   if (esArtefactoValido) {
@@ -432,28 +592,45 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
     )
   }
 
-  // Bloque de código normal (inline, con cabecera y botón copiar)
+  // Bloque de código normal (inline, con cabecera y botón copiar/ejecutar)
   return (
     <div className="my-3 rounded-lg overflow-hidden border border-[var(--color-claude-input-border)] [&_code]:!bg-transparent">
       {/* Barra superior */}
       <div className="flex items-center justify-between px-4 py-2 bg-[var(--color-claude-sidebar)]">
         <span className="text-xs text-[var(--color-claude-texto-secundario)] font-mono">{nombreLenguaje}</span>
-        <button
-          onClick={() => copiar(codigo)}
-          className="flex items-center gap-1.5 text-xs text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] transition-colors"
-        >
-          {haCopiado ? (
+        <div className="flex items-center gap-1.5">
+          {/* Boton Ejecutar (abre artefacto y ejecuta ahi) */}
+          {esEjecutable && (
             <>
-              <Check className="h-3.5 w-3.5" />
-              <span>Copiado</span>
-            </>
-          ) : (
-            <>
-              <Copy className="h-3.5 w-3.5" />
-              <span>Copiar</span>
+              <button
+                onClick={manejarEjecutarEnArtefacto}
+                className="flex items-center gap-1.5 text-xs transition-colors text-[var(--color-claude-texto-secundario)] hover:text-emerald-600"
+                title="Ejecutar codigo"
+              >
+                <Play className="h-3.5 w-3.5" />
+                <span>Ejecutar</span>
+              </button>
+              <span className="text-[var(--color-claude-input-border)]">|</span>
             </>
           )}
-        </button>
+          {/* Boton Copiar */}
+          <button
+            onClick={() => copiar(codigo)}
+            className="flex items-center gap-1.5 text-xs text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] transition-colors"
+          >
+            {haCopiado ? (
+              <>
+                <Check className="h-3.5 w-3.5" />
+                <span>Copiado</span>
+              </>
+            ) : (
+              <>
+                <Copy className="h-3.5 w-3.5" />
+                <span>Copiar</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Bloque de codigo con resaltado */}
