@@ -26,20 +26,14 @@ const UMBRAL_FONDO_PX = 100
  * - ResizeObserver detecta cambios de altura (tablas, imagenes cargando, markdown)
  * - "instant" durante auto-scroll de contenido para evitar jitter de animaciones simultaneas
  * - "smooth" reservado solo para la accion explicita del usuario (boton ir al fondo)
- * - Double ref pattern: ref sincronizado con estado para evitar closures viejos en observers
+ * - estaEnFondoRef: ref interno para rastrear posicion sin provocar re-renders
  * - estaUsuarioScrolleandoRef: previene auto-scroll cuando el usuario esta scrolleando activamente
  */
 export function useScrollAlFondo() {
   const contenedorRef = useRef<HTMLDivElement>(null)
-  const [estaEnFondo, setEstaEnFondo] = useState(true)
   const estaEnFondoRef = useRef(true)
   const estaUsuarioScrolleandoRef = useRef(false)
   const rafId = useRef<number | null>(null)
-
-  // Sincronizar ref con estado para evitar closures viejos en los observers
-  useEffect(() => {
-    estaEnFondoRef.current = estaEnFondo
-  }, [estaEnFondo])
 
   const verificarSiEstaEnFondo = useCallback(() => {
     if (!contenedorRef.current) return true
@@ -59,7 +53,6 @@ export function useScrollAlFondo() {
       behavior: suave ? "smooth" : "instant",
     })
     estaEnFondoRef.current = true
-    setEstaEnFondo(true)
   }, [])
 
   // Detectar scroll del usuario con { passive: true } para no bloquear el hilo principal
@@ -71,9 +64,7 @@ export function useScrollAlFondo() {
     const manejarScroll = () => {
       estaUsuarioScrolleandoRef.current = true
       clearTimeout(timeoutId)
-      const enFondo = verificarSiEstaEnFondo()
-      estaEnFondoRef.current = enFondo
-      setEstaEnFondo(enFondo)
+      estaEnFondoRef.current = verificarSiEstaEnFondo()
       // Resetear flag despues de 150ms de inactividad de scroll
       timeoutId = setTimeout(() => {
         estaUsuarioScrolleandoRef.current = false
@@ -128,5 +119,5 @@ export function useScrollAlFondo() {
     }
   }, [])
 
-  return { contenedorRef, estaEnFondo, irAlFondo }
+  return { contenedorRef, irAlFondo }
 }

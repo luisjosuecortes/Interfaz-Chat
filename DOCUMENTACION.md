@@ -32,7 +32,7 @@ chatslm/
 │   │   ├── indicador-pensamiento.tsx # Boton + contenido expandido de reasoning (separados para layout flex)
 │   │   ├── indicador-rag.tsx     # Indicador de estado de documentos RAG
 │   │   ├── lightbox-imagen.tsx   # Lightbox modal para ver imagenes en grande (React portal)
-│   │   ├── panel-artefacto.tsx   # Panel lateral para visualizar artefactos (codigo, HTML, SVG)
+│   │   ├── panel-artefacto.tsx   # Panel lateral para visualizar y editar artefactos (editor overlay con syntax highlighting)
 │   │   ├── pantalla-inicio.tsx   # Pantalla inicial de bienvenida
 │   │   ├── renderizador-markdown.tsx # Procesador de Markdown con pipeline LaTeX de 5 pasos
 │   │   ├── tarjeta-archivo.tsx     # Tarjeta de archivo con miniatura PDF, click-to-lightbox para imagenes
@@ -58,9 +58,11 @@ chatslm/
 │   ├── use-miniatura-pdf.ts       # Hook para generar miniaturas de PDFs (pdfjs-dist, cache global)
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
 │   ├── cliente-chat.ts           # Cliente de streaming para la API
+│   ├── constantes.ts             # Constantes compartidas cliente/servidor (INSTRUCCIONES_SISTEMA)
 │   ├── contexto-artefacto.tsx    # React Context para el sistema de artefactos (panel lateral)
 │   ├── hooks.ts                  # Hooks personalizados reutilizables
-│   ├── modelos.ts                # Catalogo de modelos y proveedores de IA
+│   ├── modelos.ts                # Catalogo de modelos y proveedores de IA (con ventanaContexto/maxTokensSalida)
+│   ├── preprocesar-imagen.ts     # Preprocesamiento de imagenes (resize + compress con Canvas API)
 │   ├── tipos.ts                  # Tipos e interfaces TypeScript
 │   └── utils.ts                  # Utilidades (cn, generarId)
 │
@@ -141,7 +143,8 @@ Usuario escribe → EntradaMensaje → ContenedorChat.manejarEnvio()
     │       ├── Busca fragmentos similares por distancia de Hamming
     │       └── Prepende contexto relevante al mensaje del usuario
     │
-    ├── 5. Trunca historial si excede limite de caracteres (truncarHistorial)
+    ├── 5. Calcula presupuesto dinamico (ventanaContexto - maxSalida - systemPrompt - RAG - margen)
+    │       └── Trunca historial si excede el presupuesto (truncarHistorial, gpt-tokenizer)
     │
     ├── 6. Llama a enviarConsultaAlModelo()
     │       │
@@ -178,12 +181,13 @@ El componente raiz de la aplicacion. Gestiona:
 - **Lectura directa del modelo** (`obtenerModeloSeleccionado()`): todas las funciones asincronas que envian mensajes al modelo (enviar, editar, reenviar, regenerar) leen el modelo seleccionado directamente del store al momento de ejecutar, en vez de capturarlo del closure de React. Esto evita que `React.memo` en `BurbujaMensaje` (que ignora cambios de callbacks para optimizar renders) provoque que se use un modelo desactualizado
 - **Layout split chat + artefacto**: cuando hay un artefacto activo, el area de chat se oculta en mobile y comparte el espacio en desktop (55% chat / 45% panel, max 700px). Usa `useArtefacto()` del contexto para reaccionar al estado del panel
 - **Cierre automatico del panel**: `cerrarArtefacto()` se llama al cambiar de conversacion (`manejarSeleccionarConversacion`) y al crear nueva conversacion (`manejarNuevaConversacion`)
+- **Limpieza RAG al eliminar conversacion** (`manejarEliminarConversacion`): al eliminar una conversacion desde la barra lateral, se llama `limpiarDatosConversacion(id)` antes de `eliminarConversacion(id)` del store, limpiando documentos en memoria, redirecciones y datos de IndexedDB
 - **Patron reserved-space (ChatGPT/Claude):** en los 4 handlers, `establecerEscribiendo(true)` + `agregarMensaje(asistente, "")` ocurren ANTES del `await obtenerContenidoConContextoRAG`, garantizando espacio reservado y scroll inmediato sin ventana invisible
 - **Indexacion RAG al adjuntar** (`manejarAdjuntoRAG`): procesa documentos inmediatamente al adjuntarlos, no al enviar
 - **ID temporal de RAG** (`idRAGTemporal`): almacena vectores antes de crear la conversacion, luego transfiere
 - **Bloqueo de envio** (`estaIndexandoRAG`): impide enviar mientras se indexan documentos
 - **Inyeccion de contexto RAG** (`obtenerContenidoConContextoRAG`): busca fragmentos relevantes y los prepende al mensaje
-- **Truncamiento de historial** (`truncarHistorial`): recorta mensajes antiguos cuando el historial excede ~150K caracteres
+- **Truncamiento de historial** (`truncarHistorial`): recorta pares completos de mensajes (usuario+asistente) cuando el historial excede el presupuesto dinamico del modelo (conteo real via `gpt-tokenizer`, encoding o200k_base, con `allowedSpecial: 'all'` para tolerar tokens especiales literales en el contenido). El presupuesto se calcula como: `ventanaContexto - maxTokensSalida - tokensSystemPrompt - tokensRAG - margenSeguridad(512)`. Cache FIFO de 500 entradas para evitar recontar. El system prompt se cuenta una sola vez (`tokensSystemPromptCache`)
 - **Drag-and-drop global** (`manejarDragOverGlobal`, `manejarDropGlobal`): handlers en el div raiz que permiten arrastrar archivos desde el explorador de archivos a cualquier parte de la pagina. Los archivos dropeados se pasan a `EntradaMensaje` via props `archivosExternos` / `alLimpiarArchivosExternos`. Un overlay visual con borde punteado (`fixed inset-0 z-50 pointer-events-none`) indica la zona de drop activa
 
 **Layout del area principal:**
@@ -352,7 +356,7 @@ Hook que genera una miniatura de la primera pagina de un PDF.
 
 **Caracteristicas:**
 - **Cache global** (fuera del componente): `Map<string, string>` indexado por ID del adjunto. Sobrevive re-renders y desmontajes.
-- **Limpieza estructurada:** Exporta `limpiarCacheMiniaturaPDF` que revoca el `ObjectURL` y limpia el mapa; es llamado automáticamente por `almacen-chat.ts` al eliminar una conversación, previniendo fugas de RAM.
+- **Limpieza estructurada:** Exporta `limpiarCacheMiniaturaPDF` que revoca el `ObjectURL` y limpia el mapa; es llamado automaticamente al eliminar un adjunto individual del input (`entrada-mensaje.tsx → eliminarAdjunto`) y al eliminar una conversacion completa (`almacen-chat.ts`), previniendo fugas de RAM en ambos escenarios.
 - **Limpieza de efecto**: si el componente se desmonta antes de completar, no actualiza el estado
 - **Cast de tipos**: usa `as Parameters<typeof pagina.render>[0]` para satisfacer los tipos de pdfjs-dist v5 que requieren el campo `canvas` en `RenderParameters`
 
@@ -461,7 +465,7 @@ El umbral de 25 lineas se eligio para deteccion puramente frontend (sin intencio
 
 | Funcion | Descripcion |
 |---------|-------------|
-| `generarIdArtefacto(contenido)` | Genera ID determinista via hash del contenido (primeros 100 chars). Usa un muestreo corto para que el ID sea estable durante streaming (append-only): mientras se generan tokens nuevos al final, el ID no cambia |
+| `generarIdArtefacto(contenido, posicionOrigen)` | Genera ID determinista via hash del contenido (primeros 100 chars) + posicion del bloque en el markdown fuente. La posicion (`node.position.start.offset` de react-markdown) previene colisiones entre bloques con prefijo identico (ej: dos componentes React con los mismos imports). El muestreo corto del contenido mantiene estabilidad durante streaming (append-only) |
 | `debeSerArtefacto(codigo, lenguaje, totalLineas)` | Heuristica de deteccion: SVG, HTML completo, o ≥25 lineas |
 | `determinarTipo(lenguaje, codigo)` | Clasifica en `"svg"`, `"html"`, `"markdown"` o `"codigo"` |
 | `inferirTitulo(codigo, lenguaje)` | Busca nombre de archivo en comentarios de la primera linea (`// app.tsx`, `# main.py`, `<!-- index.html -->`). Fallback: nombre del lenguaje |
@@ -517,44 +521,125 @@ Usa `react-syntax-highlighter` con PrismLight para resaltado de 65+ lenguajes de
 
 ### `panel-artefacto.tsx` - Panel Lateral de Artefactos
 
-Panel lateral que visualiza artefactos (codigo, HTML, SVG, markdown) abiertos desde `BloqueCodigoConResaltado` via React Context. Se renderiza condicionalmente en `ContenedorChat` cuando `artefactoActivo !== null`.
+Panel lateral que visualiza y edita artefactos (codigo, HTML, SVG, markdown, LaTeX) abiertos desde `BloqueCodigoConResaltado` via React Context. Se renderiza condicionalmente en `ContenedorChat` cuando `artefactoActivo !== null`.
 
 **Estructura:**
 
 ```
 ┌─────────────────────────────────────┐
-│  Titulo     Lang · N lineas  [⊞][↓][×] │  ← Cabecera fija (fondo blanco)
+│  Titulo     Lang · N lineas  [✎][⊞][↓][×] │  ← Cabecera fija (fondo blanco)
 ├─────────────────────────────────────┤
 │░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
-│░ CodigoConResaltado               ░│  ← Fondo claro #f9f9f9 en el
-│░ (o VistaPreviaArtefacto          ░│     contenedor scrollable (flex-1),
-│░  o RenderizadorMarkdown          ░│     llena toda la altura disponible
-│░  si modo preview activo)         ░│
+│░ Modo codigo: CodigoConResaltado   ░│  ← Fondo claro #f9f9f9 en el
+│░ Modo preview: VistaPreviaArtefacto░│     contenedor scrollable (flex-1),
+│░  o RenderizadorMarkdown           ░│     llena toda la altura disponible
+│░ Modo edicion: overlay (textarea   ░│
+│░  transparente + resaltado)        ░│
 │░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
 └─────────────────────────────────────┘
 ```
 
-**Fondo claro del contenedor de contenido:** El area de contenido usa un patron `relative` + `absolute inset-0` para garantizar que los scrollbars siempre esten en los bordes del panel. El div exterior (`flex-1 min-h-0 relative`) reserva toda la altura disponible via flexbox, y el div interior (`absolute inset-0 overflow-auto`) llena ese espacio exactamente y maneja el scroll. `bg-[var(--color-claude-sidebar)]` (`#f9f9f9`) se aplica condicionalmente al exterior (solo en modo codigo, no en vista previa). La scrollbar global (`#d1d5db`/`#9ca3af`) se integra naturalmente con el fondo claro. Este patron (usado por VS Code/Monaco y Claude.ai) garantiza que la barra de scroll horizontal este siempre al fondo del panel, incluso para documentos cortos que no llenan la altura.
+**Modos de visualizacion (3):**
+
+| Modo | Activacion | Implementacion |
+|------|-----------|----------------|
+| Codigo | Toggle "Codigo" (por defecto para codigo) | `CodigoConResaltado` con tema oneLight |
+| Preview | Toggle "Preview" (por defecto para markdown/SVG/HTML/LaTeX) | `RenderizadorMarkdown`, `VistaPreviaArtefacto` (iframe sandboxed), o `convertirLatexAMarkdown` + `RenderizadorMarkdown` |
+| Edicion | Boton lapiz "Editar" (todos los tipos) | Patron overlay: textarea transparente sobre `CodigoConResaltado` |
+
+**Editor overlay (patron `react-simple-code-editor`):**
+
+El modo edicion usa un patron de superposicion sin dependencias externas para mantener syntax highlighting mientras el usuario escribe:
+
+1. **Capa visual** (`pointer-events-none select-none aria-hidden`): `CodigoConResaltado` renderiza el codigo con tema oneLight. El `"\n"` extra al final evita que el ultimo salto de linea colapse
+2. **Capa de input** (`absolute top-0 left-0 w-full h-full`): textarea HTML transparente captura la escritura del usuario
+
+**Buffer local de edicion (desacoplado del contexto):**
+
+Las ediciones viven en un estado local `contenidoEditado` dentro de `PanelArtefacto`, completamente independiente del React Context (`ContextoArtefacto`). Esto evita un feedback loop donde el sync effect de `BloqueCodigoConResaltado` (diseñado para sincronizar streaming→panel) revertia las ediciones al detectar discrepancia entre el contenido editado y el codigo original del markdown. Al entrar en edicion, `contenidoEditado` se inicializa desde `artefactoActivo.contenido`; al salir, se descarta (`null`). La variable derivada `contenidoActual = contenidoEditado ?? contenido` se usa en todo el panel (textarea, capa visual, copy, download, preview) para que las ediciones se reflejen correctamente mientras estan activas.
+
+Los estilos estan sincronizados pixel-a-pixel en la constante `ESTILOS_EDITOR`:
+
+```typescript
+const ESTILOS_EDITOR: React.CSSProperties = {
+  fontFamily: '"Fira Code","Fira Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace',
+  fontSize: "0.85rem",
+  lineHeight: "1.5",
+  padding: "1rem",
+  whiteSpace: "pre",
+  overflowWrap: "normal",
+  wordBreak: "normal",
+  tabSize: 2,
+  color: "transparent",
+  WebkitTextFillColor: "transparent",
+  caretColor: "var(--color-claude-texto)",
+  overflow: "hidden",
+}
+```
+
+- `color: transparent` + `WebkitTextFillColor: transparent` ocultan el texto del textarea
+- `caretColor` mantiene el cursor visible sobre el codigo resaltado
+- `selection:bg-blue-300/30` (Tailwind) proporciona seleccion visible sobre texto transparente
+- Los valores de `fontFamily`, `fontSize`, `lineHeight`, `padding` y `tabSize` coinciden exactamente con los de `oneLight` + `estiloCodigoPanel` en `bloque-codigo.tsx`
+
+**Tab key handler:** `manejarTeclaEdicion` intercepta Tab para insertar 2 espacios en la posicion del cursor sin perder el foco. Usa `requestAnimationFrame` para restaurar la posicion del cursor despues de la actualizacion del textarea via React.
+
+**Scroll al cambiar de artefacto:** Usa un simple `useRef<HTMLDivElement>` + `useEffect` que hace `scrollTop = 0` al cambiar de artefacto (por `artefactoActivo?.id`). No usa `useScrollAlFondo` — ese hook tiene un `MutationObserver` que detecta cambios de `characterData`, lo cual causaba scroll al fondo en cada keystroke durante edicion.
+
+**Orden de hooks (regla de React):** Todos los hooks (`useArtefacto`, `useCopiarAlPortapapeles`, `useState`, `useRef`, `useCallback`, `useEffect`) se llaman antes del early return `if (!artefactoActivo) return null`. Las funciones derivadas (`alternarEdicion`, `manejarTeclaEdicion`, `manejarDescarga`) se definen despues del early return porque no son hooks.
+
+**Patron "ajustar estado durante render":** Al cambiar de artefacto (comparando `prevIdArtefacto` con `artefactoActivo?.id`), el panel restablece los modos automaticamente: markdown, SVG, HTML y LaTeX abren en preview por defecto; codigo abre en modo codigo. El modo edicion siempre se desactiva.
+
+**`convertirLatexAMarkdown` (funcion interna):**
+
+Convertidor ligero de 11 pasos que transforma la estructura de un documento LaTeX a Markdown, preservando formulas `$...$` y `$$...$$` intactas para que `RenderizadorMarkdown` las renderice con KaTeX. Necesario porque KaTeX solo renderiza formulas matematicas, no comandos estructurales como `\section`, `\textbf`, `\begin{enumerate}`, etc.
+
+| Paso | Transformacion |
+|------|---------------|
+| 1 | Extrae contenido de `\begin{document}...\end{document}` y titulo del preambulo |
+| 2 | Elimina comandos del preambulo (`\documentclass`, `\usepackage`, etc.) |
+| 3 | Secciones → headers Markdown (`\section` → `##`, `\subsection` → `###`) |
+| 4 | Formato de texto (`\textbf` → `**`, `\textit` → `*`, `\texttt` → backtick) |
+| 5 | Listas (`\begin{enumerate/itemize}` + `\item` → bullets Markdown) |
+| 6 | Entornos math display (equation, align, gather) → `$$...$$` |
+| 7 | Otros entornos (center, quote, verbatim) → equivalentes Markdown |
+| 8 | Espaciado y saltos de linea (`\\`, `\bigskip`, `~`, etc.) |
+| 9 | Caracteres especiales LaTeX escapados (`\&`, `\%`, `\#`, etc.) |
+| 10 | Elimina comandos no renderizables (`\label`, `\ref`, `\cite`, etc.) |
+| 11 | Limpia lineas vacias excesivas |
 
 **Acciones de la cabecera:**
 
 | Boton | Icono | Descripcion |
 |-------|-------|-------------|
-| Vista previa / Codigo | `Eye` / `Code2` | Toggle entre codigo y preview (HTML/SVG/Markdown). Markdown usa `RenderizadorMarkdown` directo; HTML/SVG usa iframe. Texto oculto en mobile (`hidden sm:inline`) |
-| Copiar | `Copy` / `Check` | Copia el contenido completo al portapapeles con retroalimentacion visual (2s). Etiqueta de texto oculta en mobile (`hidden sm:inline`) |
-| Descargar | `Download` | Descarga como archivo con extension correcta segun lenguaje (`EXTENSIONES_DESCARGA`). Etiqueta de texto oculta en mobile (`hidden sm:inline`) |
+| Editar / Editando | `Pencil` | Toggle modo edicion (todos los tipos). Se oculta Preview/Codigo durante edicion |
+| Vista previa / Codigo | `Eye` / `Code2` | Toggle entre codigo y preview (solo tipos con preview, no en modo edicion) |
+| Copiar | `Copy` / `Check` | Copia el contenido completo al portapapeles con retroalimentacion visual (2s) |
+| Descargar | `Download` | Descarga como archivo con extension correcta segun lenguaje (`EXTENSIONES_DESCARGA`) |
 | Cerrar | `X` | Cierra el panel y vuelve al chat completo |
+
+Todos los botones usan etiquetas de texto ocultas en mobile (`hidden sm:inline`).
 
 **`VistaPreviaArtefacto` (sub-componente):**
 
 Iframe sandboxed (`sandbox="allow-scripts"`) con `srcDoc` para renderizar HTML y SVG de forma segura:
 - **SVG**: se envuelve en un HTML minimo con fondo claro (`#f9f9f9`) y centrado flexbox
-- **HTML**: se inyecta directamente como `srcDoc`
+- **HTML**: se inyecta directamente como `srcDoc` via `inyectarHeartbeat()`
 - Fondo blanco para el iframe, borde zero
+
+**Proteccion contra bucles infinitos (heartbeat):**
+- Se inyecta un script `SCRIPT_HEARTBEAT` en el `<head>` del `srcDoc` que registra un listener de `postMessage`: responde `__pong__` a cada `__ping__` del padre
+- Un `useEffect` envia pings cada 2 segundos via `iframeRef.current.contentWindow.postMessage()`
+- Si el iframe no responde en 5 segundos (`Date.now() - ultimoPong > 5000`), se marca como `noResponde`
+- Se muestra un overlay con "Este artefacto dejo de responder" y un boton "Recargar"
+- "Recargar" incrementa una clave (`key`), forzando a React a destruir y recrear el iframe DOM, reiniciando el heartbeat
+- Patron usado por CodeSandbox y herramientas similares de preview de codigo
 
 **`descargarArchivo` (funcion interna):**
 
 Crea un `Blob` con el contenido, genera `ObjectURL`, crea un enlace `<a>` temporal, triggera click programatico y limpia (`revokeObjectURL`).
+
+**Fondo claro del contenedor de contenido:** El area de contenido usa un patron `relative` + `absolute inset-0` para garantizar que los scrollbars siempre esten en los bordes del panel. El div exterior (`flex-1 min-h-0 relative`) reserva toda la altura disponible via flexbox, y el div interior (`absolute inset-0 overflow-auto`) llena ese espacio exactamente y maneja el scroll. `bg-[var(--color-claude-sidebar)]` (`#f9f9f9`) se aplica condicionalmente al exterior (solo en modo codigo/edicion, no en vista previa).
 
 **Animacion de entrada:** Clase `.animate-entrada-panel` (CSS keyframe `entrada-panel`): slide-in desde la derecha (translateX 16px → 0) con fade (opacity 0 → 1) en 200ms ease-out.
 
@@ -633,8 +718,8 @@ data: [FIN]
 - Soporta contenido multimodal (imagenes y archivos en el ultimo mensaje)
 - Herramienta de busqueda web habilitada por defecto
 - Reasoning habilitado para modelos con `tieneReasoning: true` (definido en `modelos.ts`)
-- `max_output_tokens: 16384`
-- **System prompt para formateo matematico, estructura de respuesta e idioma de razonamiento** (`INSTRUCCIONES_SISTEMA`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a: (1) usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, con display math (`$$`) en lineas separadas para formulas clave; (2) estructurar listas numeradas con titulo en **bold** seguido de linea en blanco antes de la explicacion; (3) usar headers para secciones largas; (4) razonar en el mismo idioma del usuario (español si el usuario escribe en español). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
+- `max_output_tokens` dinamico: usa `maxTokensSalida` del modelo seleccionado (definido en `modelos.ts`). GPT-5.x y GPT-4.1: 32768; GPT-4o: 16384
+- **System prompt para formateo matematico, estructura de respuesta e idioma de razonamiento** (`INSTRUCCIONES_SISTEMA`, importado de `lib/constantes.ts`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a: (1) usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, con display math (`$$`) en lineas separadas para formulas clave; (2) estructurar listas numeradas con titulo en **bold** seguido de linea en blanco antes de la explicacion; (3) usar headers para secciones largas; (4) razonar en el mismo idioma del usuario (español si el usuario escribe en español). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
 
 ### `POST /api/titulo` - Generacion de Titulos
 
@@ -679,7 +764,7 @@ Usa `gpt-4o-mini` con maximo 30 tokens para generar un titulo de 6 palabras.
 | `CitacionWeb` | Fuente web citada con URL, titulo e indices |
 | `InfoBusquedaWeb` | Estado de busqueda web con consultas y fuentes |
 | `InfoPensamiento` | Estado de reasoning con resumen |
-| `ModeloDisponible` | Definicion de un modelo con id, nombre, descripcion, proveedor, categoria y `tieneReasoning` |
+| `ModeloDisponible` | Definicion de un modelo con id, nombre, descripcion, proveedor, categoria, `ventanaContexto`, `maxTokensSalida` y `tieneReasoning` |
 | `ProveedorIA` | Definicion de un proveedor de IA con id y nombre |
 | `EstadoChat` | Estado global de la aplicacion |
 | `AccionesChat` | Todas las acciones disponibles del store |
@@ -688,7 +773,7 @@ Usa `gpt-4o-mini` con maximo 30 tokens para generar un titulo de 6 palabras.
 
 | Tipo/Interfaz | Descripcion |
 |----------------|-------------|
-| `TipoArtefacto` | Union literal: `"codigo"` \| `"html"` \| `"svg"` |
+| `TipoArtefacto` | Union literal: `"codigo"` \| `"html"` \| `"svg"` \| `"markdown"` \| `"latex"` |
 | `Artefacto` | Contenido extraido del chat para el panel lateral: `id`, `tipo`, `titulo`, `contenido`, `lenguaje?`, `totalLineas` |
 
 ---
@@ -712,17 +797,17 @@ Para agregar un nuevo proveedor:
 
 ### Modelos
 
-| Modelo | Proveedor | Categoria | Reasoning | Descripcion |
-|--------|-----------|-----------|-----------|-------------|
-| `gpt-5.2` | OpenAI | gpt-5.2 | Si | El mas reciente y capaz |
-| `gpt-5.1` | OpenAI | gpt-5.1 | Si | Ideal para codigo y razonamiento |
-| `gpt-5` | OpenAI | gpt-5 | Si | Proposito general de la familia GPT-5 |
-| `gpt-5-mini` | OpenAI | gpt-5 | Si | Version rapida de GPT-5 |
-| `gpt-5-nano` | OpenAI | gpt-5 | Si | Ultra-rapido y economico |
-| `gpt-4.1` | OpenAI | gpt-4.1 | No | Versatil y preciso |
-| `gpt-4.1-mini` | OpenAI | gpt-4.1 | No | Compacto y economico |
-| `gpt-4o` | OpenAI | gpt-4o | No | Multimodal de proposito general |
-| `gpt-4o-mini` | OpenAI | gpt-4o | No | Compacto y economico (modelo por defecto) |
+| Modelo | Proveedor | Categoria | Reasoning | ventanaContexto | maxTokensSalida | Descripcion |
+|--------|-----------|-----------|-----------|-----------------|-----------------|-------------|
+| `gpt-5.2` | OpenAI | gpt-5.2 | Si | 200K | 32K | El mas reciente y capaz |
+| `gpt-5.1` | OpenAI | gpt-5.1 | Si | 200K | 32K | Ideal para codigo y razonamiento |
+| `gpt-5` | OpenAI | gpt-5 | Si | 200K | 32K | Proposito general de la familia GPT-5 |
+| `gpt-5-mini` | OpenAI | gpt-5 | Si | 128K | 16K | Version rapida de GPT-5 |
+| `gpt-5-nano` | OpenAI | gpt-5 | Si | 128K | 16K | Ultra-rapido y economico |
+| `gpt-4.1` | OpenAI | gpt-4.1 | No | 1M | 32K | Versatil y preciso |
+| `gpt-4.1-mini` | OpenAI | gpt-4.1 | No | 1M | 32K | Compacto y economico |
+| `gpt-4o` | OpenAI | gpt-4o | No | 128K | 16K | Multimodal de proposito general |
+| `gpt-4o-mini` | OpenAI | gpt-4o | No | 128K | 16K | Compacto y economico (modelo por defecto) |
 
 ---
 
@@ -762,21 +847,17 @@ const {
 Hook para auto-scroll inteligente en contenedores de chat con streaming. Patron basado en Vercel AI Chatbot.
 
 ```typescript
-// API completa del hook:
-const { contenedorRef, estaEnFondo, irAlFondo } = useScrollAlFondo()
-// contenedorRef: ref para el div contenedor de scroll
-// estaEnFondo: boolean - true si el usuario esta en los ultimos 100px del fondo
-// irAlFondo(suave?): scroll al fondo; suave=true → smooth, false → instant
-
-// Uso actual en area-chat.tsx (estaEnFondo no se necesita sin boton flotante):
+// API del hook:
 const { contenedorRef, irAlFondo } = useScrollAlFondo()
+// contenedorRef: ref para el div contenedor de scroll
+// irAlFondo(suave?): scroll al fondo; suave=true → smooth, false → instant
 ```
 
 **Arquitectura interna:**
 - `MutationObserver` (childList + subtree + characterData): detecta texto nuevo en streaming y mensajes nuevos sin depender del ciclo de React
 - `ResizeObserver`: detecta cambios de altura (markdown renderizando, tablas, imagenes cargando)
 - `estaUsuarioScrolleandoRef`: previene auto-scroll cuando el usuario scrollea activamente (flag con reset a 150ms)
-- Double ref pattern: `estaEnFondoRef` sincronizado con `estaEnFondo` state para evitar closures viejos en los observers
+- `estaEnFondoRef`: ref interno que rastrea si el usuario esta en el fondo, sin provocar re-renders (solo se usa internamente en los observers)
 - `rafId` deduplicador: un solo `requestAnimationFrame` por frame durante streaming intenso
 - `behavior: "instant"` en auto-scroll de contenido (evita jitter por animaciones colisionando); `"smooth"` disponible via `irAlFondo(true)` para posible boton futuro de ir al fondo
 - Umbral: **100px** desde el fondo
@@ -908,6 +989,7 @@ Los estilos de `.prosa-markdown` estan optimizados para legibilidad premium insp
 | `remark-gfm` | ^4.0.1 | GitHub Flavored Markdown |
 | `remark-math` | ^6.0.0 | Formulas matematicas en Markdown |
 | `rehype-katex` | ^7.0.1 | Renderizado de LaTeX con KaTeX |
+| `gpt-tokenizer` | ^3.4.0 | Conteo de tokens para truncamiento de historial (encoding o200k_base) |
 
 ---
 
@@ -942,7 +1024,7 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 7. **RAG local en el navegador**: procesamiento de documentos (PDF, codigo fuente en ~60 extensiones, Jupyter Notebooks, TXT, etc.) con pipeline streaming completo en Web Worker (async generators), embeddings binarios via WebGPU/WASM, pipeline Matryoshka (384→256 dims) → cuantizacion binaria (256 bits → 32 bytes), auto-tuning de batch size (WebGPU: 128, WASM: 32), heuristicas para archivos grandes (chunks elasticos, filtrado de paginas ruido), fragmentacion inteligente por lenguaje (separadores jerarquicos tipo LangChain: funciones, clases, bloques con fallback a parrafos/oraciones), busqueda por distancia de Hamming con priorizacion de documentos recientes, persistencia en IndexedDB e inyeccion de contexto relevante al LLM
 8. **Indexacion inmediata al adjuntar**: los documentos se procesan al adjuntarlos, no al enviar el mensaje, con indicador visual de progreso
 9. **Bloqueo de envio durante indexacion**: el boton de enviar se deshabilita mientras hay documentos RAG en proceso
-10. **Truncamiento inteligente del historial**: recorte automatico de mensajes antiguos cuando la conversacion excede ~150K caracteres, conservando al menos los ultimos 4 mensajes
+10. **Presupuesto dinamico de tokens por modelo**: el historial se trunca automaticamente cuando excede el presupuesto calculado como `ventanaContexto - maxTokensSalida - tokensSystemPrompt - tokensContextoRAG - margenSeguridad(512)`. El presupuesto es especifico por modelo (GPT-4o: 128K ventana; GPT-5.2: 200K; GPT-4.1: 1M). El system prompt se cuenta una sola vez (cache estatico). Los tokens RAG se cuentan en cada envio. Recorte por pares completos (usuario+asistente) via `gpt-tokenizer` (encoding `o200k_base`). Conserva al menos los ultimos 4 mensajes. Cache de conteo por contenido con FIFO eviction (max 500 entradas)
 11. **Eliminacion de documentos RAG**: al quitar un adjunto, se elimina tambien su indice del almacen de vectores
 12. **Edicion de mensajes** del usuario con recorte automatico del historial
 13. **Regeneracion de respuestas** manteniendo contexto
@@ -981,7 +1063,7 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 46. **Scrollbar horizontal fija al fondo del panel de artefactos**: el area de contenido del panel usa un patron `relative` + `absolute inset-0` (VS Code/Monaco pattern) para que los scrollbars siempre esten en los bordes del panel. El div exterior (`flex-1 min-h-0 relative`) define la altura via flexbox, el interior (`absolute inset-0 overflow-auto`) llena ese espacio y maneja el scroll. Esto garantiza que la barra horizontal este al fondo incluso para documentos cortos que no llenan la altura del panel.
 47. **Scrollbars finas y consistentes**: scrollbars horizontales y verticales de 6px en toda la app (webkit: `height: 6px` + `width: 6px`; Firefox: `scrollbar-width: thin`). El panel de artefactos usa la scrollbar global (`#d1d5db`/`#9ca3af`) que se integra naturalmente con el fondo claro. Las formulas LaTeX (`katex-display`) heredan el estilo global de 6px para scroll horizontal.
 48. **Flush del buffer residual en streaming**: al terminar el stream SSE (`done = true`), el cliente procesa cualquier dato restante en `bufferIncompleto` que no termine con `\n`. Esto previene perdida silenciosa del final de la respuesta cuando el ultimo chunk del servidor no incluye salto de linea final.
-49. **Limite de tokens aumentado a 16384**: `max_output_tokens` incrementado de 4096 a 16384, permitiendo respuestas tecnicas largas (~12000 palabras) sin truncamiento abrupto. 4096 tokens (~3000-3500 palabras) era insuficiente para explicaciones detalladas, codigo largo o analisis extensos.
+49. **`max_output_tokens` dinamico por modelo**: `route.ts` consulta `maxTokensSalida` del modelo seleccionado en `modelos.ts` (GPT-5.x/4.1: 32768, GPT-4o: 16384). Antes era un valor fijo de 16384 para todos los modelos. Los modelos GPT-5 soportan respuestas mas largas (~24000 palabras) sin truncamiento.
 50. **Tema claro unificado** (`oneLight`): tanto los bloques de codigo inline (<25 lineas) como el panel de artefactos usan el tema `oneLight` de react-syntax-highlighter (fondo `hsl(230, 1%, 98%)` ≈ `#fafafb`, casi blanco). La barra superior usa `--color-claude-sidebar` y el borde usa `--color-claude-input-border`, coherentes con el tema blanco de la app. El panel usa fondo transparente delegando al contenedor (`--color-claude-sidebar` = `#f9f9f9`). Consistencia visual total entre inline y panel.
 51. **Overflow delegado en panel de artefactos**: `CodigoConResaltado` (componente del panel) usa `overflow: "visible"` en su customStyle para anular el `overflow: "auto"` que el tema `oneLight` aplica al PreTag via `pre[class*="language-"]`. Esto delega el manejo de scroll al contenedor exterior (`absolute inset-0 overflow-auto`), garantizando que la scrollbar horizontal este fija al fondo del panel incluso para archivos cortos. Sin esta anulacion, react-syntax-highlighter crea una scrollbar anidada a la altura del contenido.
 52. **Botones etiquetados en el panel de artefactos**: los botones de Copiar y Descargar en la cabecera del panel ahora incluyen etiquetas de texto (`hidden sm:inline`) ademas de los iconos, siguiendo el mismo patron del toggle de Preview/Codigo. Mejora la descubribilidad de las acciones en todos los modos (codigo y vista previa).
@@ -990,18 +1072,32 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 55. **Modo preview por defecto segun tipo**: al abrir un artefacto, el panel establece automaticamente el modo vista previa segun su tipo: markdown, HTML y SVG abren en preview (renderizado); el código general abre en modo codigo (raw). Usa el patron React de "ajustar estado durante el render" con `prevIdArtefacto` para detectar cambios sin `useEffect`.
 56. **Auto-Apertura Reactiva e Inteligente de Artefactos**: cuando un modelo genera (streaming) un artefacto de código grande (≥ 25 líneas) o un bloque interpretado (SVG, HTML), este necesita abrirse automáticamente. El gran reto arquitectónico es lograr esto sin *Prop Drilling* que perjudique la memoización de Markdown, ni variables globales que intercepten historiales antiguos. La solución (`lib/contexto-mensaje.tsx`) fue crear un ligerísimo **ContextoLocal** que envuelve puramente `RenderizadorMarkdown` de CADA mensaje. El componente `bloque-codigo.tsx` consume el Hook `useMensaje()` para saber si "su mensaje anfitrión se está generando ahora mismo". Todo ocurre localmente y sin re-renderizar masivamente nada más. 
 57. **Preview Markdown sin iframe**: a diferencia de HTML/SVG que usan iframe sandboxed, el preview de markdown renderiza directamente con `RenderizadorMarkdown` (componente React puro). Esto preserva estilos de la app (`.prosa-markdown`), soporte de KaTeX, tablas GFM y bloques de codigo anidados. Los bloques de codigo dentro del markdown se renderizan via `BloqueCodigoConResaltado` y, si son ≥25 lineas, se muestran como `TarjetaArtefacto` clickable (sin recursion infinita gracias a `deshabilitarArtefacto` del panel).
-57. **Fix "Maximum update depth exceeded" en sidebar**: el error ocurria porque `barra-lateral.tsx` usaba `{estaAbierta && (<>...</>)}` para renderizar condicionalmente TODO el contenido. Al abrir el sidebar, TODOS los componentes Radix (Tooltip + DropdownMenu por cada conversacion) se montaban simultaneamente, causando cascadas internas de `setState` que excedian el limite de React (`radix-ui@1.4.3` + React 19). **Fix**: se elimino el render condicional y se usa CSS (`overflow-hidden` + `w-0`) para ocultar el contenido cuando esta cerrado. Se agrega el atributo HTML5 `inert` cuando esta colapsado para prevenir focus/interaccion con teclado y screen readers. Beneficio adicional: la transicion CSS `w-64 → w-0` ahora tiene contenido para animar (antes montaba/desmontaba abruptamente). TypeScript workaround: `{ inert: true as unknown as boolean }` porque React 19 aun no exporta tipos perfectos para `inert`.
-58. **Auto-scroll en panel de artefactos durante streaming**: el panel lateral de artefactos (`panel-artefacto.tsx`) ahora reutiliza el hook `useScrollAlFondo` de `lib/hooks.ts` para hacer auto-scroll automatico mientras el modelo genera contenido. El `MutationObserver` del hook detecta cambios de `characterData` en el DOM y hace scroll instantaneo si el usuario no ha scrolleado manualmente hacia arriba. Un `useEffect` adicional fuerza scroll al fondo al cambiar de artefacto (`artefactoActivo?.id`).
-59. **Paste de imagenes del portapapeles (Ctrl+V) y drag-and-drop local**: `entrada-mensaje.tsx` soporta tres metodos de adjuntar archivos: (1) file picker via boton de clip, (2) paste del portapapeles (`onPaste` en el textarea) que detecta archivos via `clipboardData.items` y solo previene el paste de texto si hay archivos, (3) drag-and-drop local (`onDragOver`/`onDragLeave`/`onDrop` en el contenedor del input) con feedback visual (borde punteado + fondo tintado). Ademas, acepta archivos desde el drag-and-drop global de `ContenedorChat` via props `archivosExternos` / `alLimpiarArchivosExternos`, procesados con un `useEffect`. La funcion compartida `procesarArchivos()` centraliza la logica de lectura (`FileReader.readAsDataURL`), validacion por extension via `esArchivoSoportado()` (de `separadores-codigo.ts`) y limite de adjuntos. El `manejarDragLeave` usa `relatedTarget` para evitar falsos negativos al mover el cursor entre elementos hijos del contenedor.
-60. **Limite de 10 adjuntos por mensaje**: constante `MAXIMO_ADJUNTOS = 10` que limita la cantidad total de archivos/imagenes por mensaje. Se aplica en tres puntos: (1) `procesarArchivos()` calcula el espacio disponible y solo procesa archivos que caben, (2) el callback de `establecerAdjuntos` verifica el limite antes de agregar, (3) el boton de adjuntar archivo se deshabilita cuando se alcanza el limite (`disabled={adjuntos.length >= MAXIMO_ADJUNTOS}`). Funciona identicamente para file picker, paste, drag-and-drop local y drag-and-drop global.
-61. **Lightbox/modal para ver imagenes** (`lightbox-imagen.tsx`): componente ligero usando `createPortal` a `document.body` con overlay semi-transparente (`bg-black/80 backdrop-blur-sm`). Se cierra con Escape (via `addEventListener("keydown")`), click fuera de la imagen, o boton X. Bloquea el scroll del body (`overflow: hidden`) mientras esta abierto. Se integra en `tarjeta-archivo.tsx`: las imagenes siempre muestran `cursor-pointer` y abren el lightbox al hacer click, en ambas variantes (compacta y expandida). El boton eliminar usa `e.stopPropagation()` para no disparar el lightbox. El boton X de imagenes usa `!bg-black/60 hover:!bg-black/80` con `!text-white` y `ring-1 ring-white/30` para mantener contraste sobre fondos oscuros (los `!important` previenen que `variant="ghost"` de shadcn sobreescriba colores en hover).
-62. **Drag-and-drop global de archivos** (`contenedor-chat.tsx`): handlers `onDragOver`/`onDragLeave`/`onDrop` en el div raiz de `ContenedorChat` permiten arrastrar archivos desde el explorador de archivos del OS a cualquier parte de la pagina. Un overlay visual (`fixed inset-0 z-50 border-2 border-dashed pointer-events-none`) muestra la zona de drop activa. Solo se activa si `evento.dataTransfer.types` incluye "Files" (ignora drag de texto). Los archivos dropeados se almacenan en `archivosDropeados` state y se pasan a `EntradaMensaje` via props `archivosExternos` / `alLimpiarArchivosExternos`. `EntradaMensaje` los procesa via un `useEffect` que llama `procesarArchivos()` y limpia el state del padre. Compatible con los metodos existentes (file picker, paste, drag-and-drop local en el input).
-63. **Fix hydration error de Radix UI Popover** (`entrada-mensaje.tsx`): el Popover del selector de modelos causaba un error de hidratacion (`aria-controls` ID mismatch) porque Radix UI genera IDs internos diferentes en SSR vs cliente. **Fix**: deferred mounting con `estaMontado` state + `useEffect(() => set(true), [])`. El Popover solo se renderiza despues del primer mount en cliente; durante SSR se muestra un `<span>` con el nombre del modelo como placeholder. Esto preserva el textarea visible durante SSR (mejor FCP) sin romper la hidratacion.
-64. **Fix validacion de archivos adjuntos** (`entrada-mensaje.tsx`): la validacion anterior usaba `TIPOS_ACEPTADOS` (un Set de extensiones como `.pdf`) y comparaba contra `archivo.type` (un MIME type como `application/pdf`). Nunca coincidian, rechazando silenciosamente todos los archivos no-imagen con MIME type definido (PDFs, JSON, etc.). Los archivos de codigo (.ts, .py) pasaban por accidente porque su `archivo.type` es vacio en navegadores. **Fix**: se reemplazo la validacion por MIME type con `esArchivoSoportado(archivo.name)` de `separadores-codigo.ts`, que valida correctamente por extension de archivo, nombres conocidos (Dockerfile, Makefile) y lista negra. Se elimino el Set `TIPOS_ACEPTADOS` (ya no se necesita).
-65. **LaTeX Preview con convertidor LaTeX→Markdown**: los bloques de codigo con lenguaje `latex` o `tex` se detectan como artefactos visuales y se abren en modo preview por defecto. Como KaTeX solo renderiza formulas matematicas (no documentos completos), el preview usa `convertirLatexAMarkdown()`, un convertidor ligero de 11 pasos en `panel-artefacto.tsx` que transforma la estructura del documento LaTeX a Markdown: extrae body de `\begin{document}`, convierte `\section`→`##`, `\textbf`→`**`, `\textit`→`*`, listas enumerate/itemize→bullets markdown, entornos math (equation/align/gather)→`$$...$$`, y limpia preambulo/espaciado/caracteres especiales. Las formulas inline `$...$` y display `$$...$$` se preservan intactas para KaTeX. No requirio dependencias nuevas. Se agrego `"latex"` a `TipoArtefacto` en `tipos.ts` y el icono `Sigma` al mapa `ICONOS_ARTEFACTO`.
-66. **Edicion en vivo de artefactos**: todos los artefactos (codigo, HTML, SVG, markdown, LaTeX) ahora son editables directamente en el panel lateral. Se agrego un tercer modo de vista ("Editar") junto a los existentes ("Codigo" y "Preview"). El boton de lapiz (`Pencil` de lucide-react) en la cabecera alterna entre el modo edicion (textarea nativo monoespaciado) y la vista normal. El textarea usa `actualizarContenidoArtefacto()` del contexto de artefactos existente para sincronizar cambios en tiempo real. Al salir de edicion, el panel restaura automaticamente el modo adecuado segun el tipo (preview para visuales, codigo para programaticos). Durante el modo edicion, el toggle Preview/Codigo se oculta para evitar confusion. La edicion es temporal (vive en el estado React, no persiste), ideal para ajustes rapidos antes de copiar o descargar.
-65. **Fix boton X invisible en hover sobre imagenes** (`tarjeta-archivo.tsx`): el boton eliminar usaba `variant="ghost"` de shadcn que aplica `hover:bg-accent hover:text-accent-foreground` en hover, sobreescribiendo `bg-black/60` y `text-white` y haciendo la X invisible sobre imagenes. **Fix**: se agregaron modificadores `!important` de Tailwind (`!bg-black/60`, `hover:!bg-black/80`, `!text-white`) para que los estilos custom prevalezcan sobre los de la variante ghost. Aplicado a los 3 botones X del componente (imagenes, PDFs, y archivos genericos).
-66. **Previsualizacion de imagenes mas grande** (`tarjeta-archivo.tsx`): el tamano de previsualizacion de imagenes adjuntas en la variante compacta (area de input) se aumento de `h-20 w-20` (80px) a `h-32 w-32` (128px) para mejor visibilidad. La variante expandida (burbuja de mensaje) se mantiene en `h-24 w-24` (96px).
+58. **Fix "Maximum update depth exceeded" en sidebar**: el error ocurria porque `barra-lateral.tsx` usaba `{estaAbierta && (<>...</>)}` para renderizar condicionalmente TODO el contenido. Al abrir el sidebar, TODOS los componentes Radix (Tooltip + DropdownMenu por cada conversacion) se montaban simultaneamente, causando cascadas internas de `setState` que excedian el limite de React (`radix-ui@1.4.3` + React 19). **Fix**: se elimino el render condicional y se usa CSS (`overflow-hidden` + `w-0`) para ocultar el contenido cuando esta cerrado. Se agrega el atributo HTML5 `inert` cuando esta colapsado para prevenir focus/interaccion con teclado y screen readers. Beneficio adicional: la transicion CSS `w-64 → w-0` ahora tiene contenido para animar (antes montaba/desmontaba abruptamente). TypeScript workaround: `{ inert: true as unknown as boolean }` porque React 19 aun no exporta tipos perfectos para `inert`.
+59. **Scroll al inicio al cambiar de artefacto en panel lateral**: el panel lateral de artefactos (`panel-artefacto.tsx`) usa un simple `useRef<HTMLDivElement>` + `useEffect` que ejecuta `scrollTop = 0` al cambiar de artefacto (dependencia: `artefactoActivo?.id`). Se elimino el hook `useScrollAlFondo` del panel porque su `MutationObserver` (que detecta cambios de `characterData` en el DOM) causaba scroll automatico al fondo en cada keystroke durante el modo edicion — el textarea muta el DOM, el observer lo detecta, y al tener `estaEnFondoRef = true` fuerza scroll al fondo. `useScrollAlFondo` permanece intacto en `area-chat.tsx` donde si se necesita para seguir el streaming de tokens.
+60. **Paste de imagenes del portapapeles (Ctrl+V) y drag-and-drop local**: `entrada-mensaje.tsx` soporta tres metodos de adjuntar archivos: (1) file picker via boton de clip, (2) paste del portapapeles (`onPaste` en el textarea) que detecta archivos via `clipboardData.items` y solo previene el paste de texto si hay archivos, (3) drag-and-drop local (`onDragOver`/`onDragLeave`/`onDrop` en el contenedor del input) con feedback visual (borde punteado + fondo tintado). Ademas, acepta archivos desde el drag-and-drop global de `ContenedorChat` via props `archivosExternos` / `alLimpiarArchivosExternos`, procesados con un `useEffect`. La funcion compartida `procesarArchivos()` (async) centraliza la logica: las imagenes se preprocesan con `preprocesarImagen()` (resize + compress), los demas archivos se leen con `FileReader.readAsDataURL`. Validacion por extension via `esArchivoSoportado()` (de `separadores-codigo.ts`) y limite de adjuntos. El `manejarDragLeave` usa `relatedTarget` para evitar falsos negativos al mover el cursor entre elementos hijos del contenedor.
+61. **Limite de 10 adjuntos por mensaje**: constante `MAXIMO_ADJUNTOS = 10` que limita la cantidad total de archivos/imagenes por mensaje. Se aplica en tres puntos: (1) `procesarArchivos()` calcula el espacio disponible y solo procesa archivos que caben, (2) el callback de `establecerAdjuntos` verifica el limite antes de agregar, (3) el boton de adjuntar archivo se deshabilita cuando se alcanza el limite (`disabled={adjuntos.length >= MAXIMO_ADJUNTOS}`). Funciona identicamente para file picker, paste, drag-and-drop local y drag-and-drop global.
+62. **Lightbox/modal para ver imagenes** (`lightbox-imagen.tsx`): componente ligero usando `createPortal` a `document.body` con overlay semi-transparente (`bg-black/80 backdrop-blur-sm`). Se cierra con Escape (via `addEventListener("keydown")`), click fuera de la imagen, o boton X. Bloquea el scroll del body (`overflow: hidden`) mientras esta abierto. Se integra en `tarjeta-archivo.tsx`: las imagenes siempre muestran `cursor-pointer` y abren el lightbox al hacer click, en ambas variantes (compacta y expandida). El boton eliminar usa `e.stopPropagation()` para no disparar el lightbox. El boton X de imagenes usa `!bg-black/60 hover:!bg-black/80` con `!text-white` y `ring-1 ring-white/30` para mantener contraste sobre fondos oscuros (los `!important` previenen que `variant="ghost"` de shadcn sobreescriba colores en hover).
+63. **Drag-and-drop global de archivos** (`contenedor-chat.tsx`): handlers `onDragOver`/`onDragLeave`/`onDrop` en el div raiz de `ContenedorChat` permiten arrastrar archivos desde el explorador de archivos del OS a cualquier parte de la pagina. Un overlay visual (`fixed inset-0 z-50 border-2 border-dashed pointer-events-none`) muestra la zona de drop activa. Solo se activa si `evento.dataTransfer.types` incluye "Files" (ignora drag de texto). Los archivos dropeados se almacenan en `archivosDropeados` state y se pasan a `EntradaMensaje` via props `archivosExternos` / `alLimpiarArchivosExternos`. `EntradaMensaje` los procesa via un `useEffect` que llama `procesarArchivos()` y limpia el state del padre. Compatible con los metodos existentes (file picker, paste, drag-and-drop local en el input).
+64. **Fix hydration error de Radix UI Popover** (`entrada-mensaje.tsx`): el Popover del selector de modelos causaba un error de hidratacion (`aria-controls` ID mismatch) porque Radix UI genera IDs internos diferentes en SSR vs cliente. **Fix**: deferred mounting con `estaMontado` state + `useEffect(() => set(true), [])`. El Popover solo se renderiza despues del primer mount en cliente; durante SSR se muestra un `<span>` con el nombre del modelo como placeholder. Esto preserva el textarea visible durante SSR (mejor FCP) sin romper la hidratacion.
+65. **Fix validacion de archivos adjuntos** (`entrada-mensaje.tsx`): la validacion anterior usaba `TIPOS_ACEPTADOS` (un Set de extensiones como `.pdf`) y comparaba contra `archivo.type` (un MIME type como `application/pdf`). Nunca coincidian, rechazando silenciosamente todos los archivos no-imagen con MIME type definido (PDFs, JSON, etc.). Los archivos de codigo (.ts, .py) pasaban por accidente porque su `archivo.type` es vacio en navegadores. **Fix**: se reemplazo la validacion por MIME type con `esArchivoSoportado(archivo.name)` de `separadores-codigo.ts`, que valida correctamente por extension de archivo, nombres conocidos (Dockerfile, Makefile) y lista negra. Se elimino el Set `TIPOS_ACEPTADOS` (ya no se necesita).
+66. **LaTeX Preview con convertidor LaTeX→Markdown**: los bloques de codigo con lenguaje `latex` o `tex` se detectan como artefactos visuales y se abren en modo preview por defecto. Como KaTeX solo renderiza formulas matematicas (no documentos completos), el preview usa `convertirLatexAMarkdown()`, un convertidor ligero de 11 pasos en `panel-artefacto.tsx` que transforma la estructura del documento LaTeX a Markdown: extrae body de `\begin{document}`, convierte `\section`→`##`, `\textbf`→`**`, `\textit`→`*`, listas enumerate/itemize→bullets markdown, entornos math (equation/align/gather)→`$$...$$`, y limpia preambulo/espaciado/caracteres especiales. Las formulas inline `$...$` y display `$$...$$` se preservan intactas para KaTeX. No requirio dependencias nuevas. Se agrego `"latex"` a `TipoArtefacto` en `tipos.ts` y el icono `Sigma` al mapa `ICONOS_ARTEFACTO`.
+67. **Edicion en vivo de artefactos con syntax highlighting (editor overlay)**: todos los artefactos (codigo, HTML, SVG, markdown, LaTeX) son editables directamente en el panel lateral con un editor que preserva syntax highlighting durante la escritura. El boton de lapiz (`Pencil` de lucide-react) alterna entre el modo edicion y la vista normal. La implementacion usa el patron overlay (inspirado en `react-simple-code-editor`): un `<textarea>` HTML con texto transparente (`color: transparent`, `-webkit-text-fill-color: transparent`) superpuesto `absolute` sobre `CodigoConResaltado` con tema oneLight. El cursor permanece visible via `caret-color: var(--color-claude-texto)`, y la seleccion es visible via `selection:bg-blue-300/30`. Los estilos criticos (fontFamily, fontSize, lineHeight, padding, tabSize) estan sincronizados pixel-a-pixel en la constante `ESTILOS_EDITOR` con los mismos valores que `oneLight` + `estiloCodigoPanel` de `bloque-codigo.tsx`. Tab inserta 2 espacios sin perder foco (via `requestAnimationFrame` para restaurar el cursor). Las ediciones viven en un buffer local (`contenidoEditado`) desacoplado del React Context para evitar que el sync effect de streaming las revierta. Al salir de edicion, si hubo cambios, se persisten al contexto via `actualizarContenidoArtefacto(contenidoEditado, lineasEditadas)`, actualizando el `artefactoActivo` global. Esto permite que el preview (markdown, LaTeX, HTML, SVG) refleje inmediatamente los cambios del usuario. El panel restaura automaticamente el modo adecuado (preview para visuales, codigo para programaticos).
+68. **Fix boton X invisible en hover sobre imagenes** (`tarjeta-archivo.tsx`): el boton eliminar usaba `variant="ghost"` de shadcn que aplica `hover:bg-accent hover:text-accent-foreground` en hover, sobreescribiendo `bg-black/60` y `text-white` y haciendo la X invisible sobre imagenes. **Fix**: se agregaron modificadores `!important` de Tailwind (`!bg-black/60`, `hover:!bg-black/80`, `!text-white`) para que los estilos custom prevalezcan sobre los de la variante ghost. Aplicado a los 3 botones X del componente (imagenes, PDFs, y archivos genericos).
+69. **Previsualizacion de imagenes mas grande** (`tarjeta-archivo.tsx`): el tamano de previsualizacion de imagenes adjuntas en la variante compacta (area de input) se aumento de `h-20 w-20` (80px) a `h-32 w-32` (128px) para mejor visibilidad. La variante expandida (burbuja de mensaje) se mantiene en `h-24 w-24` (96px).
+70. **Persistencia de almacenamiento IndexedDB** (`almacen-vectores.ts`): se solicita `navigator.storage.persist()` al inicializar el almacen de vectores RAG para evitar que el navegador elimine datos de IndexedDB bajo presion de almacenamiento. Los navegadores modernos conceden persistencia automaticamente para sitios con engagement frecuente o PWAs instaladas.
+71. **Liberacion de memoria PDF.js** (`worker-embeddings.ts`): el Web Worker llama `docPDF.destroy()` en un bloque `finally` al terminar de procesar cada PDF, liberando caches internas de paginas, fuentes e imagenes decodificadas que de otro modo se acumularian indefinidamente en la memoria del Worker. Con PDFs grandes (100+ paginas), esto evita acumular cientos de MB.
+72. **Contexto RAG con estructura XML** (`procesador-rag.ts`): la inyeccion de contexto RAG al prompt usa tags XML (`<contexto-documentos>`, `<fragmento>`, `<instruccion>`) en vez de delimitadores de texto plano (`---`). Cada fragmento incluye metadata como atributos XML (`indice`, `fuente`, `posicion`). La instruccion de uso se coloca al final del bloque (posicion de recencia) para maximizar la atencion del modelo, siguiendo hallazgos del paper "Lost in the Middle" (Liu et al., 2023). El formato XML es mas compacto y crea limites estructurales fuertes que los LLMs atienden mejor.
+73. **Mapa de redirecciones RAG** (`almacen-vectores.ts`): al transferir documentos de un ID temporal a una conversacion real (`transferirDocumentos`), se registra una redireccion en un `Map<string, string>`. Todas las funciones publicas del almacen (`obtenerDocumentos`, `actualizarDocumento`, `eliminarDocumento`, `buscarFragmentosSimilares`, `tieneFragmentosListos`, `obtenerEstadisticas`) resuelven el ID via `resolverIdConversacion()` antes de acceder al Map principal. Esto evita una race condition donde callbacks asincrónicos del Web Worker (que aun referencian el ID temporal) perdian silenciosamente actualizaciones de estado y embeddings, dejando documentos permanentemente en estado "vectorizando".
+74. **Preprocesamiento de imagenes** (`lib/preprocesar-imagen.ts`): las imagenes adjuntadas se redimensionan y comprimen automaticamente antes de almacenarse en el estado de React. Usa `createImageBitmap(archivo, { imageOrientation: 'from-image' })` para manejar orientacion EXIF, escala proporcionalmente a max 2048px en el lado mayor, y comprime con `OffscreenCanvas.convertToBlob()` (JPEG 0.85 para fotos, WebP 0.92 para PNGs/capturas). Imagenes pequeñas (<1024px en ambas dimensiones) y GIFs pasan sin modificacion. Reduce fotos de iPhone 15 Pro (48MP, ~15MB) a ~200-400KB, evitando congelamiento de UI, uso excesivo de memoria JS y timeouts en fetch POST. La API de OpenAI redimensiona internamente a 2048px, asi que no hay perdida de calidad efectiva.
+75. **Constantes compartidas cliente/servidor** (`lib/constantes.ts`): el system prompt `INSTRUCCIONES_SISTEMA` se extrae a un modulo compartido importado tanto por `route.ts` (servidor, parametro `instructions` de la Responses API) como por `contenedor-chat.tsx` (cliente, conteo de tokens para presupuesto dinamico). Evita duplicacion y garantiza consistencia.
+76. **Limpieza de datos RAG al eliminar conversacion** (`almacen-vectores.ts`): `limpiarDatosConversacion(id)` elimina documentos del Map en memoria, limpia redirecciones del mapa de redirecciones que apuntan a ese ID (previniendo memory leak por acumulacion indefinida de entradas), y elimina datos de IndexedDB. Se llama desde `contenedor-chat.tsx` via `manejarEliminarConversacion` antes de `eliminarConversacion` del store. Complementa la limpieza de miniaturas PDF que ya existia en `almacen-chat.ts`.
+77. **Fix colision de IDs de artefactos** (`bloque-codigo.tsx`, `renderizador-markdown.tsx`): `generarIdArtefacto()` ahora recibe `posicionOrigen` (el offset del bloque de codigo en el markdown fuente, via `node.position.start.offset` de react-markdown). Se mezcla en el hash DJB2 junto con los primeros 100 chars del contenido. Previene colisiones entre bloques con prefijo identico (ej: dos componentes React con los mismos imports) sin afectar la estabilidad del ID durante streaming (el offset del opening ``` no cambia al appendear tokens).
+78. **Fix memory leak de ObjectURLs en miniaturas PDF** (`entrada-mensaje.tsx`): `eliminarAdjunto()` ahora llama `limpiarCacheMiniaturaPDF(id)` antes de filtrar el adjunto del estado. Revoca el ObjectURL y elimina la entrada del cache global `cacheMiniatura`. Solo se ejecuta al click del boton X (no al enviar mensaje, donde `establecerAdjuntos([])` limpia sin llamar `eliminarAdjunto`). Es no-op si el adjunto no era PDF.
+79. **Cola de serializacion del Worker RAG** (`motor-embeddings.ts`): `procesarArchivoCompleto()` serializa el envio de archivos al Worker mediante un mutex (`archivoEnProceso`) y cola FIFO (`colaArchivos`). Solo un archivo se procesa en el Worker a la vez; al soltar multiples archivos simultaneamente, cada uno espera su turno. La decodificacion base64 ocurre fuera de la cola. Previene interleaving de inferencia ONNX concurrente que podria causar errores o comportamiento indefinido.
+80. **Two-Stage Retrieval** (`almacen-vectores.ts`, `worker-embeddings.ts`, `motor-embeddings.ts`, `tipos.ts`): la busqueda RAG ahora usa un modelo de recuperacion en dos fases inspirado en sistemas como Pinecone y Vespa. **Fase 1**: filtrado rapido por distancia de Hamming binaria (32 bytes) que selecciona los top 50 candidatos en nanosegundos por fragmento. **Fase 2**: re-ranking preciso con cosine similarity sobre vectores Float32 Matryoshka(256 dims) para elegir los 10 definitivos. El Float32 truncado que el pipeline ya calculaba como paso intermedio (linea 440 de `worker-embeddings.ts`) ahora se preserva y envia al hilo principal via Transferable Objects junto al binario. `FragmentoDocumento` tiene un campo opcional `embeddingFloat?: Float32Array` (backward compatible con docs existentes en IndexedDB). `generarEmbedding()` retorna `EmbeddingConsulta { binario, float }` con ambas representaciones. Costo: 1KB extra por fragmento (256×4 bytes), ~0.1ms extra por busqueda (50 dot products). Como los vectores Matryoshka estan pre-normalizados, dot product = cosine similarity (sin necesidad de re-normalizar).
+81. **Proteccion contra bucles infinitos en iframe** (`panel-artefacto.tsx`): `VistaPreviaArtefacto` inyecta un script de heartbeat en el `srcDoc` del iframe. El padre envia pings cada 2s via `postMessage`; si no recibe respuesta en 5s, muestra overlay "dejo de responder" con boton "Recargar" que destruye y recrea el iframe via React `key`. Patron inspirado en CodeSandbox. Protege contra codigo LLM con loops infinitos (`while(true)`) que bloquearian el event loop del iframe.
+82. **Fix crash por tokens especiales en conteo de tokens** (`contenedor-chat.tsx`): `contarTokensMensaje()` llamaba a `countTokens(contenido)` de `gpt-tokenizer` sin opciones, lo que causaba un error de runtime `Disallowed special token found: <|endoftext|>` cuando el contenido de un mensaje incluia tokens especiales literales (ej: conversaciones sobre tokenizacion, prompts o formato interno de modelos). **Fix**: se pasa `{ allowedSpecial: 'all' }` como segundo argumento a `countTokens()`. Es seguro porque la funcion solo se usa para estimar el tamano del historial para truncamiento dinamico, no para enviar tokens al modelo. Los tokens especiales en el texto son texto literal del usuario/asistente, no instrucciones de control.
+83. **Fix editor de artefactos no dejaba editar (feedback loop)** (`panel-artefacto.tsx`): al escribir en el editor overlay del panel de artefactos, el texto se revertia instantaneamente al original, haciendo el editor inutilizable. **Causa raiz**: `manejarCambioEdicion` escribia al React Context (`actualizarContenidoArtefacto`), lo que disparaba el sync effect de `BloqueCodigoConResaltado` (bloque-codigo.tsx:409-413) — diseñado para sincronizar streaming→panel — que detectaba discrepancia entre el contenido editado y el `codigo` original del markdown y lo revertia. En desktop el chat permanece montado (`hidden lg:flex`) cuando el panel esta abierto, manteniendo el effect activo. **Fix**: las ediciones ahora viven en un buffer local `contenidoEditado` (estado `useState<string | null>`) completamente desacoplado del contexto. Al entrar en edicion se inicializa desde `artefactoActivo.contenido`; al salir se descarta (`null`). La variable derivada `contenidoActual = contenidoEditado ?? contenido` alimenta textarea, capa visual, copy, download, preview y conteo de lineas. `actualizarContenidoArtefacto` ya no se importa en el panel. El sync effect de streaming queda intacto en `bloque-codigo.tsx` sin modificaciones. Patron inspirado en `react-simple-code-editor` donde el estado de edicion es local y los props externos no lo sobreescriben.
 
 ---
 
@@ -1289,6 +1385,13 @@ Transferable Objects → hilo principal (zero-copy)
 - El hilo principal nunca se bloquea durante el procesamiento
 - Los embeddings binarios se transfieren via **Transferable Objects** (`postMessage` con transferencia de `ArrayBuffer`). El buffer se mueve en **0ms** sin copiar datos (zero-copy)
 
+**Cola de serializacion de archivos:**
+- `procesarArchivoCompleto()` en `motor-embeddings.ts` serializa el envio de archivos al Worker mediante un mutex (`archivoEnProceso` + `colaArchivos`)
+- Solo un archivo viaja al Worker a la vez; los demas esperan en cola FIFO
+- La decodificacion base64 (`decodificarBase64()`) ocurre fuera de la cola (es rapida y libera la cadena base64 de memoria al transferir el ArrayBuffer)
+- Cuando un archivo termina en el Worker, el bloque `finally` libera el mutex y despierta al siguiente en la cola
+- Previene interleaving de inferencia ONNX concurrente: el runtime ONNX (WebGPU/WASM) no esta disenado para multiples llamadas simultaneas a `pipe()`
+
 **Protocolo de mensajes Worker:**
 | Mensaje | Direccion | Descripcion |
 |---------|-----------|-------------|
@@ -1325,7 +1428,7 @@ Transferable Objects → hilo principal (zero-copy)
 
 Almacen en memoria indexado por conversacion con persistencia en IndexedDB. Cada conversacion tiene su propio set de documentos y fragmentos. Los datos sobreviven recargas de pagina (F5).
 
-**Estructura:** `Map<conversacionId, DocumentoRAG[]>` (memoria) + IndexedDB `penguinchat-rag` (persistencia)
+**Estructura:** `Map<conversacionId, DocumentoRAG[]>` (memoria) + IndexedDB `penguinchat-rag` (persistencia) + `Map<string, string>` de redirecciones (para callbacks asincrónicos post-transferencia)
 
 **Persistencia en IndexedDB:**
 - DB `penguinchat-rag`, store `documentos`, clave = conversacionId, valor = DocumentoRAG[]
@@ -1333,6 +1436,7 @@ Almacen en memoria indexado por conversacion con persistencia en IndexedDB. Cada
 - **Escrituras fire-and-forget:** cuando un documento pasa a estado `"listo"`, se persiste en IDB sin bloquear. Eliminaciones y transferencias tambien actualizan IDB
 - Solo se persisten documentos con estado `"listo"` (los que tienen embeddings completos)
 - `esperarHidratacion()`: funcion exportada que retorna una promesa. Se usa en `buscarContextoRelevante()` para esperar que IDB termine de cargar antes de buscar
+- **Persistencia garantizada:** Se solicita `navigator.storage.persist()` al inicializar el modulo para evitar que el navegador elimine datos de IndexedDB bajo presion de almacenamiento
 
 **Busqueda con umbral de similitud y priorizacion:**
 - Retorna los top-10 fragmentos mas similares (maximo)
@@ -1346,6 +1450,12 @@ Almacen en memoria indexado por conversacion con persistencia en IndexedDB. Cada
 - Se comparan bit a bit usando XOR + tabla popcount precalculada (256 entradas)
 - Resultado normalizado 0..1 (1 = identicos, 0 = opuestos)
 - ~100x mas rapido que producto punto sobre Float32Array[256]
+
+**Limpieza al eliminar conversacion (`limpiarDatosConversacion`):**
+- Elimina documentos del Map en memoria
+- Elimina redirecciones que apuntan al ID de la conversacion (previene memory leak del mapa de redirecciones)
+- Elimina datos de IndexedDB
+- Se llama desde `contenedor-chat.tsx` via `manejarEliminarConversacion`
 
 #### `extractor-texto.ts` - Extractor de Texto (Fallback)
 
@@ -1440,22 +1550,22 @@ pendiente → extrayendo → fragmentando → vectorizando → listo | error
 
 **Construccion de contexto (`construirContextoParaPrompt`):**
 - Fusiona fragmentos adyacentes del mismo documento (indices consecutivos)
-- Incluye posicion en el documento (seccion X de Y)
-```
---- CONTEXTO DE DOCUMENTOS SUBIDOS ---
-
-Usa la siguiente informacion extraida de los documentos del usuario...
-Los fragmentos estan ordenados por posicion en el documento...
-
-[Fragmento 1] (Fuente: documento.pdf, seccion 15 de 487)
+- Usa estructura XML para marcadores fuertes que los LLMs atienden mejor
+- Incluye posicion en el documento como atributos XML
+- Instruccion posicionada al final (recencia) para maxima atencion del modelo (paper "Lost in the Middle", Liu et al. 2023)
+```xml
+<contexto-documentos>
+<fragmento indice="1" fuente="documento.pdf" posicion="seccion 15 de 487">
 <texto del fragmento>
+</fragmento>
 
-[Fragmento 2] (Fuente: documento.pdf, secciones 45-47 de 487)
+<fragmento indice="2" fuente="documento.pdf" posicion="secciones 45-47 de 487">
 <texto fusionado de fragmentos adyacentes>
+</fragmento>
+</contexto-documentos>
 
---- FIN DEL CONTEXTO ---
+<instruccion>Usa la informacion de los fragmentos anteriores para responder la pregunta del usuario. Cita las fuentes cuando sea relevante.</instruccion>
 
-Pregunta del usuario:
 <mensaje original del usuario>
 ```
 
@@ -1474,7 +1584,8 @@ Pregunta del usuario:
    - Si hay ID temporal de RAG, crea la conversacion y transfiere los documentos (`transferirDocumentos`)
    - Separa imagenes (para API) de documentos (ya indexados) usando `debeUsarRAG()`
    - Busca contexto RAG relevante con `obtenerContenidoConContextoRAG()`
-   - Trunca el historial si excede el limite con `truncarHistorial()` (~150K chars)
+   - Cuenta tokens del contexto RAG y calcula presupuesto dinamico del modelo
+   - Trunca el historial si excede el presupuesto con `truncarHistorial()`
 
 3. **En edicion, reenvio y regeneracion:** el contexto RAG se re-busca con cada mensaje para mantener relevancia
 
@@ -1525,7 +1636,7 @@ webpack: (config) => {
 
 7. **ID temporal de RAG:** Cuando el usuario adjunta un archivo antes de crear una conversacion (pantalla de inicio), se genera un ID temporal para almacenar los vectores. Al enviar el primer mensaje, los documentos se transfieren al ID real de la conversacion via `transferirDocumentos()`.
 
-8. **Truncamiento inteligente de historial:** Cuando la conversacion es muy larga (>150K caracteres), los mensajes mas antiguos se recortan automaticamente antes de enviar a la API. Siempre se conservan al menos los ultimos 4 mensajes (2 intercambios completos) para mantener el contexto inmediato.
+8. **Presupuesto dinamico de tokens por modelo:** El historial de mensajes se trunca usando un presupuesto calculado como `ventanaContexto - maxTokensSalida - tokensSystemPrompt - tokensRAG - margenSeguridad(512)`. El presupuesto es especifico por modelo: GPT-4o tiene ventana de 128K con max salida 16K, GPT-5.2 tiene 200K con 32K, GPT-4.1 tiene 1M con 32K. Los tokens del system prompt se cuentan una sola vez (es estatico, ~500 tokens) y se cachean en `tokensSystemPromptCache`. Los tokens del contexto RAG se cuentan en cada envio (varian por consulta). Los mensajes mas antiguos se recortan en pares completos (usuario+asistente). Siempre se conservan al menos los ultimos 4 mensajes (2 intercambios completos). Los conteos de tokens se cachean por contenido de mensaje (Map con FIFO eviction, max 500 entradas) para evitar recontar en cada envio. `countTokens` se llama con `{ allowedSpecial: 'all' }` para tolerar tokens especiales literales (como `<|endoftext|>`) que pueden aparecer en conversaciones sobre tokenizacion o prompts.
 
 9. **Modelo de embeddings optimizado:** Se usa `mixedbread-ai/mxbai-embed-xsmall-v1` en vez de `all-MiniLM-L6-v2` porque tiene la misma dimension base (384) y tamano (~24MB int8) pero con ventana de contexto de 4096 tokens vs 256. Esto permite codificar fragmentos completos sin truncamiento. En WASM se carga con `dtype: "q8"` (cuantizado). En WebGPU se usa `dtype: "fp32"` (optimo para GPU).
 
@@ -1566,3 +1677,9 @@ webpack: (config) => {
 27. **Priorizacion de documentos recien adjuntados (boost de recencia):** Cuando el usuario adjunta documentos con su mensaje, la busqueda RAG aplica un boost aditivo de `0.10` a los fragmentos de esos documentos. El patron esta inspirado en el `TimeWeightedVectorStoreRetriever` de LangChain (`puntuacion_final = similitud + boost`). El boost se propaga desde `contenedor-chat.tsx` → `procesador-rag.ts` → `almacen-vectores.ts` usando un `Set<string>` con los IDs de documentos recientes. Solo se aplica en `manejarEnvio()` — las acciones de edicion, reenvio y regeneracion no aplican boost (no hay adjuntos nuevos). Con embeddings binarios de 256 bits (donde vectores aleatorios promedian ~0.5 de similitud), un boost de 0.10 es suficiente para elevar significativamente los fragmentos relevantes del documento recien adjuntado sin desplazar completamente resultados de alta similitud de otros documentos.
 
 28. **Soporte de Jupyter Notebooks (.ipynb):** Los archivos `.ipynb` son JSON con un array `cells`. El parser extrae texto semantico de cada celda: markdown se preserva tal cual, codigo se envuelve en code fences (con lenguaje detectado del `metadata.kernelspec.language`, default `python`), y se concatenan salidas de texto (stdout, text/plain de execute_result). Las celdas se separan con `---` como puntos de corte naturales para el fragmentador. Salidas largas se truncan a 500 chars. Salidas binarias (imagenes) se ignoran. El parser existe duplicado en `extractor-texto.ts` (fallback hilo principal) y `worker-embeddings.ts` (Worker) porque el Worker no puede importar del extractor. Los separadores de fragmentacion combinan markdown (headings) y Python (class, def) para respetar limites semanticos del contenido mixto de notebooks.
+
+29. **Liberacion de memoria PDF.js (`docPDF.destroy()`):** Despues de extraer texto de un PDF, el Web Worker llama `docPDF.destroy()` en un bloque `finally` para liberar caches internas de PDF.js (paginas, fuentes, imagenes decodificadas). Sin esta llamada, cada PDF procesado acumula memoria que nunca se libera — con PDFs grandes (100+ paginas con imagenes), esto puede consumir cientos de MB. El `.catch(() => {})` en destroy previene que un error en la limpieza oculte el error original del pipeline.
+
+30. **Persistencia `navigator.storage.persist()`:** Al inicializar el modulo `almacen-vectores.ts`, se solicita persistencia de almacenamiento al navegador via `navigator.storage.persist()`. Esto previene que el navegador elimine silenciosamente los datos de IndexedDB bajo presion de almacenamiento. Es fire-and-forget (no bloquea), y los navegadores modernos suelen auto-conceder para sitios con engagement frecuente.
+
+31. **Contexto RAG con estructura XML (mitigacion "Lost in the Middle"):** El contexto RAG inyectado al prompt usa tags XML (`<contexto-documentos>`, `<fragmento>`, `<instruccion>`) en vez de delimitadores de texto plano. Segun el paper "Lost in the Middle" (Liu et al., 2023), los LLMs atienden mas al inicio y final del contexto. Los tags XML crean limites estructurales que mejoran la atencion. La instruccion de uso se coloca despues de los fragmentos (posicion de recencia). Los atributos XML (`fuente`, `posicion`) dan metadata estructurada al modelo sin texto redundante.

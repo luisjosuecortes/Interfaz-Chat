@@ -246,13 +246,16 @@ export const EXTENSIONES_DESCARGA: Record<string, string> = {
 }
 
 /** Genera un ID determinista y estable durante streaming.
- *  Usa solo los primeros 100 chars para que el ID no cambie mientras se appendea codigo. */
-function generarIdArtefacto(contenido: string): string {
+ *  Usa los primeros 100 chars + posicion en el markdown para que el ID no cambie
+ *  mientras se appendea codigo y sea unico entre bloques con prefijo identico. */
+function generarIdArtefacto(contenido: string, posicionOrigen: number): string {
   let hash = 0
   const muestra = contenido.slice(0, 100)
   for (let i = 0; i < muestra.length; i++) {
     hash = ((hash << 5) - hash + muestra.charCodeAt(i)) | 0
   }
+  // Mezclar posicion en el markdown: previene colision entre bloques con prefijo identico
+  hash = ((hash << 5) - hash + posicionOrigen) | 0
   return `art-${Math.abs(hash).toString(36)}`
 }
 
@@ -346,6 +349,8 @@ interface PropiedadesBloqueCodigo {
   lenguaje: string
   /** Deshabilita la detección de artefactos (usado dentro del panel lateral) */
   deshabilitarArtefacto?: boolean
+  /** Offset del bloque en el markdown fuente (para ID unico entre bloques con prefijo identico) */
+  posicionOrigen?: number
 }
 
 /** Estilo para el panel de artefactos (fondo delegado al contenedor, overflow delegado) */
@@ -368,30 +373,27 @@ const estiloCodigoInline = {
 
 // === Componente principal: bloque de código con resaltado ===
 
-export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefacto }: PropiedadesBloqueCodigo) {
+export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefacto, posicionOrigen }: PropiedadesBloqueCodigo) {
   const { haCopiado, copiar } = useCopiarAlPortapapeles()
-  const { estaDisponible, abrirArtefacto, artefactoActivo, actualizarContenidoArtefacto } = useArtefacto()
+  const { estaDisponible, abrirArtefacto, artefactoActivo, actualizarContenidoArtefacto, editadoPorUsuario } = useArtefacto()
   const contextoMensaje = useMensaje()
   const estaGenerandose = contextoMensaje?.estaGenerandose ?? false
   const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
   const totalLineas = codigo.split("\n").length
 
-  // Generar ID solo una vez al montar el código. Si el código está incompleto (streaming < 100 chars),
-  // el hash temprano servirá inmutablemente como ID único de este bloque durante todo su ciclo de vida.
-  const [idArtefacto] = useState(() => generarIdArtefacto(codigo))
+  // Generar ID solo una vez al montar el código. Mezcla posicion del bloque en el markdown
+  // para que dos bloques con contenido identico pero en posiciones distintas tengan IDs diferentes.
+  const [idArtefacto] = useState(() => generarIdArtefacto(codigo, posicionOrigen ?? 0))
 
   const esArtefactoValido = !deshabilitarArtefacto && estaDisponible && debeSerArtefacto(codigo, lenguaje, totalLineas)
-  const seHaAutoAbierto = useRef(false)
 
-  // Auto-Apertura Inteligente: abrir el panel solo si este mensaje SE ESTÁ generando ahora mismo
+  // Auto-abrir artefacto durante streaming (solo la primera vez que se genera)
   useEffect(() => {
-    if (estaGenerandose && esArtefactoValido && !seHaAutoAbierto.current) {
-      seHaAutoAbierto.current = true;
+    if (estaGenerandose && esArtefactoValido) {
       const titulo = inferirTitulo(codigo, lenguaje)
-      const tipo = determinarTipo(lenguaje, codigo)
       abrirArtefacto({
         id: idArtefacto,
-        tipo,
+        tipo: determinarTipo(lenguaje, codigo),
         titulo,
         contenido: codigo,
         lenguaje,
@@ -400,12 +402,13 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
     }
   }, [estaGenerandose, esArtefactoValido, codigo, lenguaje, totalLineas, idArtefacto, abrirArtefacto])
 
-  // Sync en tiempo real: si el panel muestra este artefacto y el código cambió (streaming), actualizar
+  // Sync en tiempo real: si el panel muestra este artefacto y el código cambió (streaming), actualizar.
+  // NO sincronizar si el usuario editó el artefacto manualmente (editadoPorUsuario = true).
   useEffect(() => {
-    if (artefactoActivo?.id === idArtefacto && artefactoActivo.contenido !== codigo) {
+    if (artefactoActivo?.id === idArtefacto && artefactoActivo.contenido !== codigo && !editadoPorUsuario) {
       actualizarContenidoArtefacto(codigo, totalLineas)
     }
-  }, [codigo, totalLineas, artefactoActivo?.id, artefactoActivo?.contenido, idArtefacto, actualizarContenidoArtefacto])
+  }, [codigo, totalLineas, artefactoActivo?.id, artefactoActivo?.contenido, idArtefacto, actualizarContenidoArtefacto, editadoPorUsuario])
 
   // Si califica como artefacto y el sistema está habilitado, mostrar tarjeta
   if (esArtefactoValido) {

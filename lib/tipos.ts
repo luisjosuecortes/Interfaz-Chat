@@ -11,12 +11,15 @@ export type EstadoProcesamientoRAG =
   | "listo"
   | "error"
 
-/** Un fragmento de documento con su embedding binario */
+/** Un fragmento de documento con embeddings para busqueda en dos fases:
+ *  1. Hamming binario (embedding) → filtrado rapido de candidatos
+ *  2. Cosine similarity Float32 (embeddingFloat) → re-ranking preciso */
 export interface FragmentoDocumento {
   id: string
   documentoId: string
   texto: string
-  embedding: Uint8Array
+  embedding: Uint8Array           // Binario 32 bytes (Hamming rapido, fase 1)
+  embeddingFloat?: Float32Array   // Matryoshka 256 dims (re-ranking preciso, fase 2)
   indice: number
   metadatos: {
     inicio: number
@@ -119,6 +122,8 @@ export interface ModeloDisponible {
   descripcion: string
   proveedor: string  // ID del proveedor (e.g. "openai", "anthropic")
   categoria: string  // Familia del modelo (e.g. "gpt-5.2", "claude-4")
+  ventanaContexto: number   // Tokens max de contexto (ej: 128_000 para GPT-4o)
+  maxTokensSalida: number   // Tokens max de respuesta (ej: 16_384 para GPT-4o)
   tieneReasoning?: boolean
 }
 

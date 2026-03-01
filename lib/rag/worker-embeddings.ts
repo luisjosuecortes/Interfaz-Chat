@@ -156,6 +156,7 @@ interface PaginaPDF {
 interface DocPDF {
   numPages: number
   getPage(num: number): Promise<PaginaPDF>
+  destroy(): Promise<void>
 }
 
 /** Extrae texto de una sola pagina PDF */
@@ -432,11 +433,13 @@ async function vectorizarYEnviarBatch(
   const dimOrig = resultado.dims[1]
   const cantidad = resultado.dims[0]
 
-  // Matryoshka + cuantizacion binaria
+  // Matryoshka + cuantizacion binaria (guardar ambas representaciones para Two-Stage Retrieval)
   const embeddings = new Uint8Array(cantidad * BYTES_BINARIO)
+  const embeddingsFloat = new Float32Array(cantidad * DIM_MATRYOSHKA)
   for (let i = 0; i < cantidad; i++) {
     const completo = resultado.data.slice(i * dimOrig, (i + 1) * dimOrig)
     const truncado = truncarMatryoshka(completo)
+    embeddingsFloat.set(truncado, i * DIM_MATRYOSHKA)
     const binario = cuantizarBinario(truncado)
     embeddings.set(binario, i * BYTES_BINARIO)
   }
@@ -450,8 +453,8 @@ async function vectorizarYEnviarBatch(
   }))
 
   enviar(
-    { tipo: "batchProcesado", id, fragmentos, embeddings, cantidad, procesados: offset + cantidad },
-    [embeddings.buffer]
+    { tipo: "batchProcesado", id, fragmentos, embeddings, embeddingsFloat, cantidad, procesados: offset + cantidad },
+    [embeddings.buffer, embeddingsFloat.buffer]
   )
 }
 
@@ -491,33 +494,40 @@ async function procesarArchivo(id: number, archivo: ArrayBuffer, nombre: string,
 
   enviar({ tipo: "progresoArchivo", id, fase: "extrayendo", fragmentosEstimados })
 
-  // Pipeline streaming con async generators:
-  // extraerPaginas yield→ fragmentarStream yield→ acumular en batch → vectorizar
-  const paginas = extraerPaginas(id, archivo, tipoMime, nombre, esGrande, docPDF)
-  const fragmentos = fragmentarStream(paginas, tamanoFragmento, solapamiento, separadoresLenguaje)
+  try {
+    // Pipeline streaming con async generators:
+    // extraerPaginas yield→ fragmentarStream yield→ acumular en batch → vectorizar
+    const paginas = extraerPaginas(id, archivo, tipoMime, nombre, esGrande, docPDF)
+    const fragmentos = fragmentarStream(paginas, tamanoFragmento, solapamiento, separadoresLenguaje)
 
-  let batch: FragmentoStream[] = []
-  let totalProcesados = 0
+    let batch: FragmentoStream[] = []
+    let totalProcesados = 0
 
-  for await (const fragmento of fragmentos) {
-    batch.push(fragmento)
+    for await (const fragmento of fragmentos) {
+      batch.push(fragmento)
 
-    if (batch.length >= tamanoBatch) {
+      if (batch.length >= tamanoBatch) {
+        enviar({ tipo: "progresoArchivo", id, fase: "vectorizando", procesados: totalProcesados })
+        await vectorizarYEnviarBatch(id, batch, totalProcesados)
+        totalProcesados += batch.length
+        batch = []
+      }
+    }
+
+    // Drenaje final: procesar fragmentos restantes sin esperar a llenar el batch
+    if (batch.length > 0) {
       enviar({ tipo: "progresoArchivo", id, fase: "vectorizando", procesados: totalProcesados })
       await vectorizarYEnviarBatch(id, batch, totalProcesados)
       totalProcesados += batch.length
-      batch = []
+    }
+
+    enviar({ tipo: "archivoCompleto", id, totalFragmentos: totalProcesados })
+  } finally {
+    // Liberar memoria de PDF.js: caches de paginas, fuentes e imagenes decodificadas
+    if (docPDF) {
+      await docPDF.destroy().catch(() => { })
     }
   }
-
-  // Drenaje final: procesar fragmentos restantes sin esperar a llenar el batch
-  if (batch.length > 0) {
-    enviar({ tipo: "progresoArchivo", id, fase: "vectorizando", procesados: totalProcesados })
-    await vectorizarYEnviarBatch(id, batch, totalProcesados)
-    totalProcesados += batch.length
-  }
-
-  enviar({ tipo: "archivoCompleto", id, totalFragmentos: totalProcesados })
 }
 
 // === EMBEDDINGS DE CONSULTA (para busqueda) ===
@@ -533,16 +543,18 @@ async function procesarBatchConsulta(id: number, textos: string[]) {
   const cantidad = resultado.dims[0]
 
   const flat = new Uint8Array(cantidad * BYTES_BINARIO)
+  const flatFloat = new Float32Array(cantidad * DIM_MATRYOSHKA)
   for (let i = 0; i < cantidad; i++) {
     const completo = resultado.data.slice(i * dimOrig, (i + 1) * dimOrig)
     const truncado = truncarMatryoshka(completo)
+    flatFloat.set(truncado, i * DIM_MATRYOSHKA)
     const binario = cuantizarBinario(truncado)
     flat.set(binario, i * BYTES_BINARIO)
   }
 
   enviar(
-    { tipo: "resultadoBatch", id, datos: flat, cantidad },
-    [flat.buffer]
+    { tipo: "resultadoBatch", id, datos: flat, datosFloat: flatFloat, cantidad },
+    [flat.buffer, flatFloat.buffer]
   )
 }
 

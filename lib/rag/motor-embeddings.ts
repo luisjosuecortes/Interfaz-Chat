@@ -14,7 +14,6 @@ const TAMANO_BATCH_FALLBACK = 16
 
 // Estado del motor
 let estadoCarga: "inactivo" | "cargando" | "listo" | "error" = "inactivo"
-let errorCarga: string | null = null
 let dispositivoUsado = "pendiente"
 
 // Web Worker
@@ -23,6 +22,11 @@ let workerListo = false
 let modoFallback = false
 let promesaInicializacion: Promise<void> | null = null
 let contadorMensajes = 0
+
+// Cola de serializacion: solo un archivo se procesa en el Worker a la vez
+// para evitar interleaving de inferencia ONNX concurrente
+let archivoEnProceso = false
+const colaArchivos: Array<() => void> = []
 
 // Fallback: pipeline directamente en el hilo principal (se carga solo si el Worker falla)
 interface PipelineEmbeddings {
@@ -35,13 +39,16 @@ let pipelinePrincipal: PipelineEmbeddings | null = null
 
 // === Tipos para procesamiento de archivos ===
 
-/** Fragmento procesado con embedding binario (resultado del pipeline completo) */
+/** Fragmento procesado con embeddings duales (resultado del pipeline completo):
+ *  - embedding: binario 32 bytes (Hamming, fase 1)
+ *  - embeddingFloat: Float32 Matryoshka 256 dims (cosine, fase 2 re-ranking) */
 export interface FragmentoProcesado {
   texto: string
   indice: number
   inicio: number
   fin: number
   embedding: Uint8Array
+  embeddingFloat: Float32Array
 }
 
 /** Callback de progreso del procesamiento de archivos */
@@ -57,9 +64,9 @@ export interface CallbackProgresoArchivo {
 
 // === Promesas pendientes ===
 
-// Consultas de embedding (busqueda)
+// Consultas de embedding (busqueda) — retorna binario + Float32
 const pendientes = new Map<number, {
-  resolve: (embeddings: Uint8Array[]) => void
+  resolve: (embeddings: Uint8Array[], embeddingsFloat: Float32Array[]) => void
   reject: (error: Error) => void
 }>()
 
@@ -74,18 +81,6 @@ const pendientesArchivo = new Map<number, {
   esPDF?: boolean
 }>()
 
-// Suscriptores de progreso de descarga del modelo
-const suscriptoresProgreso = new Set<(progreso: number) => void>()
-
-/** Suscribirse a actualizaciones de progreso de descarga del modelo */
-export function suscribirseAProgresoCarga(callback: (progreso: number) => void): () => void {
-  suscriptoresProgreso.add(callback)
-  return () => { suscriptoresProgreso.delete(callback) }
-}
-
-function notificarProgreso(progreso: number) {
-  for (const cb of suscriptoresProgreso) cb(progreso)
-}
 
 // === Matryoshka + Cuantizacion binaria (duplicadas del Worker, necesarias para fallback) ===
 
@@ -144,7 +139,6 @@ function calcularPorcentaje(
 function manejarMensajeWorker(data: Record<string, unknown>) {
   switch (data.tipo) {
     case "progresoCarga":
-      notificarProgreso(data.progreso as number)
       break
     case "info":
       dispositivoUsado = data.device as string
@@ -160,12 +154,15 @@ function manejarMensajeWorker(data: Record<string, unknown>) {
       const p = pendientes.get(data.id as number)
       if (p) {
         const flat = data.datos as Uint8Array
+        const flatFloat = data.datosFloat as Float32Array
         const cant = data.cantidad as number
         const embeddings: Uint8Array[] = []
+        const embeddingsFloat: Float32Array[] = []
         for (let i = 0; i < cant; i++) {
           embeddings.push(flat.slice(i * BYTES_BINARIO, (i + 1) * BYTES_BINARIO))
+          embeddingsFloat.push(flatFloat.slice(i * DIMENSION_MATRYOSHKA, (i + 1) * DIMENSION_MATRYOSHKA))
         }
-        p.resolve(embeddings)
+        p.resolve(embeddings, embeddingsFloat)
         pendientes.delete(data.id as number)
       }
       break
@@ -221,12 +218,14 @@ function manejarMensajeWorker(data: Record<string, unknown>) {
       if (pa) {
         const metadatos = data.fragmentos as { texto: string; indice: number; inicio: number; fin: number }[]
         const embeddings = data.embeddings as Uint8Array
+        const embeddingsFloat = data.embeddingsFloat as Float32Array
         const cant = data.cantidad as number
 
         for (let i = 0; i < cant; i++) {
           pa.fragmentos.push({
             ...metadatos[i],
             embedding: embeddings.slice(i * BYTES_BINARIO, (i + 1) * BYTES_BINARIO),
+            embeddingFloat: embeddingsFloat.slice(i * DIMENSION_MATRYOSHKA, (i + 1) * DIMENSION_MATRYOSHKA),
           })
         }
 
@@ -344,9 +343,7 @@ async function inicializarEnHiloPrincipal(): Promise<void> {
     const p = await pipeline("feature-extraction", MODELO_EMBEDDINGS, {
       device: dispositivoUsado as "webgpu" | "wasm",
       dtype,
-      progress_callback: (datos: Record<string, unknown>) => {
-        if (typeof datos.progress === "number") notificarProgreso(datos.progress)
-      },
+      progress_callback: () => { },
     })
     pipelinePrincipal = p as unknown as PipelineEmbeddings
   } catch {
@@ -355,9 +352,7 @@ async function inicializarEnHiloPrincipal(): Promise<void> {
       const p = await pipeline("feature-extraction", MODELO_EMBEDDINGS, {
         device: "wasm",
         dtype: "q8",
-        progress_callback: (datos: Record<string, unknown>) => {
-          if (typeof datos.progress === "number") notificarProgreso(datos.progress)
-        },
+        progress_callback: () => { },
       })
       pipelinePrincipal = p as unknown as PipelineEmbeddings
     } else {
@@ -394,7 +389,6 @@ async function inicializar(): Promise<void> {
     await promesaInicializacion
   } catch (error) {
     estadoCarga = "error"
-    errorCarga = error instanceof Error ? error.message : "Error al cargar modelo"
     promesaInicializacion = null
     throw error
   }
@@ -452,12 +446,14 @@ async function procesarArchivoEnHiloPrincipal(
 
     for (let j = 0; j < batch.length; j++) {
       const completo = salida.data.slice(j * dimOrig, (j + 1) * dimOrig)
+      const truncado = truncarMatryoshka(completo)
       resultados.push({
         texto: batch[j].texto,
         indice: batch[j].indice,
         inicio: batch[j].inicio,
         fin: batch[j].fin,
-        embedding: cuantizarBinario(truncarMatryoshka(completo)),
+        embedding: cuantizarBinario(truncado),
+        embeddingFloat: truncado,
       })
     }
 
@@ -486,39 +482,61 @@ export async function procesarArchivoCompleto(
   await inicializar()
 
   if (!modoFallback && worker && workerListo) {
+    // Decodificar base64 fuera de la cola (rapido, no necesita serializacion)
     const archivo = await decodificarBase64(contenidoBase64)
 
-    return new Promise<FragmentoProcesado[]>((resolve, reject) => {
-      const id = contadorMensajes++
+    // Esperar turno en la cola: solo un archivo viaja al Worker a la vez
+    if (archivoEnProceso) {
+      await new Promise<void>(resolve => colaArchivos.push(resolve))
+    }
+    archivoEnProceso = true
 
-      pendientesArchivo.set(id, {
-        resolve,
-        reject,
-        fragmentos: [],
-        alProgreso,
+    try {
+      return await new Promise<FragmentoProcesado[]>((resolve, reject) => {
+        const id = contadorMensajes++
+
+        pendientesArchivo.set(id, {
+          resolve,
+          reject,
+          fragmentos: [],
+          alProgreso,
+        })
+
+        // Transferable: el ArrayBuffer se mueve al Worker sin copiar
+        worker!.postMessage(
+          { tipo: "procesarArchivo", id, archivo, nombre, tipoMime },
+          [archivo]
+        )
       })
-
-      // Transferable: el ArrayBuffer se mueve al Worker sin copiar
-      worker!.postMessage(
-        { tipo: "procesarArchivo", id, archivo, nombre, tipoMime },
-        [archivo]
-      )
-    })
+    } finally {
+      archivoEnProceso = false
+      const siguiente = colaArchivos.shift()
+      if (siguiente) siguiente()
+    }
   }
 
   // Fallback: procesar en hilo principal usando extractor + fragmentador (import dinamico)
   return procesarArchivoEnHiloPrincipal(contenidoBase64, tipoMime, nombre, alProgreso)
 }
 
-/** Genera un embedding binario (Uint8Array de 32 bytes) para un texto de consulta */
-export async function generarEmbedding(texto: string): Promise<Uint8Array> {
+/** Resultado de generarEmbedding: incluye ambas representaciones para Two-Stage Retrieval */
+export interface EmbeddingConsulta {
+  binario: Uint8Array       // 32 bytes, para filtrado Hamming rapido
+  float: Float32Array       // 256 dims, para re-ranking cosine preciso
+}
+
+/** Genera embeddings duales (binario + Float32) para un texto de consulta */
+export async function generarEmbedding(texto: string): Promise<EmbeddingConsulta> {
   await inicializar()
 
   if (!modoFallback && worker && workerListo) {
-    return new Promise<Uint8Array>((resolve, reject) => {
+    return new Promise<EmbeddingConsulta>((resolve, reject) => {
       const id = contadorMensajes++
       pendientes.set(id, {
-        resolve: (embeddings) => resolve(embeddings[0]),
+        resolve: (embeddings, embeddingsFloat) => resolve({
+          binario: embeddings[0],
+          float: embeddingsFloat[0],
+        }),
         reject,
       })
       worker!.postMessage({ tipo: "embedSingle", id, texto })
@@ -531,54 +549,9 @@ export async function generarEmbedding(texto: string): Promise<Uint8Array> {
     pooling: "mean",
     normalize: true,
   })
-  return cuantizarBinario(truncarMatryoshka(resultado.data))
-}
-
-/** Genera embeddings binarios para multiples textos en un solo batch */
-export async function generarEmbeddingsBatch(textos: string[]): Promise<Uint8Array[]> {
-  await inicializar()
-
-  if (!modoFallback && worker && workerListo) {
-    return new Promise<Uint8Array[]>((resolve, reject) => {
-      const id = contadorMensajes++
-      pendientes.set(id, { resolve, reject })
-      worker!.postMessage({ tipo: "embedBatch", id, textos })
-    })
-  }
-
-  // Fallback: hilo principal
-  if (!pipelinePrincipal) throw new Error("Pipeline no inicializado")
-  const textosTruncados = textos.map(t => t.slice(0, LIMITE_CARACTERES))
-  const resultado = await pipelinePrincipal(textosTruncados, {
-    pooling: "mean",
-    normalize: true,
-  })
-
-  const dimensionOriginal = resultado.dims[1]
-  const embeddings: Uint8Array[] = []
-  for (let i = 0; i < resultado.dims[0]; i++) {
-    const completo = resultado.data.slice(i * dimensionOriginal, (i + 1) * dimensionOriginal)
-    embeddings.push(cuantizarBinario(truncarMatryoshka(completo)))
-  }
-  return embeddings
-}
-
-/** Obtiene el estado actual del motor de embeddings */
-export function obtenerEstadoMotor(): {
-  estado: typeof estadoCarga
-  error: string | null
-  dispositivo: string
-  usandoWorker: boolean
-} {
+  const truncado = truncarMatryoshka(resultado.data)
   return {
-    estado: estadoCarga,
-    error: errorCarga,
-    dispositivo: dispositivoUsado,
-    usandoWorker: !modoFallback && workerListo,
+    binario: cuantizarBinario(truncado),
+    float: truncado,
   }
-}
-
-/** Inicia la precarga del modelo sin bloquear */
-export function precargarModelo(): void {
-  inicializar().catch(() => {})
 }

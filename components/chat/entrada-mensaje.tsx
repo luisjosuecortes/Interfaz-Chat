@@ -12,6 +12,8 @@ import { IconoProveedor } from "@/components/ui/iconos-proveedor"
 import { IndicadorRAG } from "@/components/chat/indicador-rag"
 import { TarjetaArchivoConMiniatura } from "@/components/chat/tarjeta-archivo"
 import { generarAceptarExtensiones, esArchivoSoportado } from "@/lib/rag/separadores-codigo"
+import { preprocesarImagen } from "@/lib/preprocesar-imagen"
+import { limpiarCacheMiniaturaPDF } from "@/lib/use-miniatura-pdf"
 
 // Tipos de archivos aceptados
 const TIPOS_IMAGEN = "image/png,image/jpeg,image/gif,image/webp"
@@ -102,41 +104,58 @@ export function EntradaMensaje({
     referenciaInputArchivo.current?.click()
   }
 
-  /** Procesa archivos desde file input, paste o drag-and-drop */
-  function procesarArchivos(archivos: FileList | File[]) {
+  /** Procesa archivos desde file input, paste o drag-and-drop.
+   *  Imagenes se preprocesan (resize + compress) antes de almacenar. */
+  async function procesarArchivos(archivos: FileList | File[]) {
     const espacioDisponible = MAXIMO_ADJUNTOS - adjuntos.length
     if (espacioDisponible <= 0) return
 
     const archivosArray = Array.from(archivos).slice(0, espacioDisponible)
 
-    archivosArray.forEach((archivo) => {
+    for (const archivo of archivosArray) {
       // Validar tipo (imagenes siempre aceptadas, archivos segun extension)
       const esImagen = archivo.type.startsWith("image/")
-      if (!esImagen && !esArchivoSoportado(archivo.name)) return
+      if (!esImagen && !esArchivoSoportado(archivo.name)) continue
 
-      const lector = new FileReader()
-      lector.onload = () => {
-        const nuevoAdjunto: Adjunto = {
-          id: generarId(),
-          tipo: esImagen ? "imagen" : "archivo",
-          nombre: archivo.name,
-          contenido: lector.result as string,
-          tipoMime: archivo.type,
-        }
-        establecerAdjuntos((previo) => {
-          if (previo.length >= MAXIMO_ADJUNTOS) return previo
-          return [...previo, nuevoAdjunto]
+      let contenido: string
+      let tipoMime = archivo.type
+
+      if (esImagen) {
+        // Preprocesar: redimensionar + comprimir fotos grandes, manejar EXIF
+        const resultado = await preprocesarImagen(archivo)
+        contenido = resultado.dataUrl
+        tipoMime = resultado.tipoMime
+      } else {
+        // Archivos de texto/codigo: leer como data URL directo
+        contenido = await new Promise<string>((resolve, reject) => {
+          const lector = new FileReader()
+          lector.onload = () => resolve(lector.result as string)
+          lector.onerror = () => reject(new Error("Error al leer archivo"))
+          lector.readAsDataURL(archivo)
         })
-        if (alProcesarAdjuntoRAG) alProcesarAdjuntoRAG(nuevoAdjunto)
       }
-      lector.readAsDataURL(archivo)
-    })
+
+      const nuevoAdjunto: Adjunto = {
+        id: generarId(),
+        tipo: esImagen ? "imagen" : "archivo",
+        nombre: archivo.name,
+        contenido,
+        tipoMime,
+      }
+      establecerAdjuntos((previo) => {
+        if (previo.length >= MAXIMO_ADJUNTOS) return previo
+        return [...previo, nuevoAdjunto]
+      })
+      if (alProcesarAdjuntoRAG) alProcesarAdjuntoRAG(nuevoAdjunto)
+    }
   }
 
-  // Procesar archivos dropeados desde fuera del input (drag-and-drop global)
+  // Procesar archivos dropeados desde fuera del input (drag-and-drop global).
+  // setState ocurre dentro de procesarArchivos (async), no sincrónicamente en el effect body.
   useEffect(() => {
     if (archivosExternos && archivosExternos.length > 0) {
-      procesarArchivos(archivosExternos)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void procesarArchivos(archivosExternos)
       alLimpiarArchivosExternos?.()
     }
   }, [archivosExternos, alLimpiarArchivosExternos]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -192,6 +211,7 @@ export function EntradaMensaje({
   }
 
   function eliminarAdjunto(id: string) {
+    limpiarCacheMiniaturaPDF(id)
     establecerAdjuntos((previo) => previo.filter((a) => a.id !== id))
     alEliminarDocumentoRAG?.(id)
   }

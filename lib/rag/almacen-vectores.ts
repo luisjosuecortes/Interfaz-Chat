@@ -41,6 +41,16 @@ for (let i = 0; i < 256; i++) {
 
 const almacenesPorConversacion = new Map<string, DocumentoRAG[]>()
 
+// Redirecciones: cuando transferirDocumentos mueve docs de un ID temporal a uno real,
+// los callbacks asincrónicos del Worker aun referencian el ID viejo.
+// Este mapa redirige ID temporal → ID real para que las actualizaciones no se pierdan.
+const redirecciones = new Map<string, string>()
+
+/** Resuelve un ID de conversacion, siguiendo redirecciones si existen */
+function resolverIdConversacion(id: string): string {
+  return redirecciones.get(id) ?? id
+}
+
 // Hidratacion: se inicia al cargar el modulo, todas las lecturas criticas la esperan
 let promesaHidratacion: Promise<void> = Promise.resolve()
 
@@ -77,6 +87,13 @@ async function hidratarDesdeIDB(): Promise<void> {
 // Iniciar hidratacion al cargar el modulo (solo en browser)
 if (typeof window !== "undefined" && typeof indexedDB !== "undefined") {
   promesaHidratacion = hidratarDesdeIDB()
+
+  // Solicitar persistencia para que el navegador no elimine datos de IndexedDB bajo presion de almacenamiento
+  if (navigator.storage?.persist) {
+    navigator.storage.persist().then(concedido => {
+      if (!concedido) console.warn("[RAG] Persistencia de almacenamiento no concedida por el navegador")
+    })
+  }
 }
 
 /** Persiste los documentos listos de una conversacion en IndexedDB (fire-and-forget) */
@@ -123,6 +140,18 @@ function similitudBinaria(a: Uint8Array, b: Uint8Array): number {
   return bitsIguales / (a.length * 8)
 }
 
+/** Cosine similarity entre dos vectores Float32 pre-normalizados (Matryoshka 256).
+ *  Usado en la fase 2 (re-ranking) del Two-Stage Retrieval.
+ *  Como ambos vectores estan normalizados, dot product = cosine similarity. */
+function similitudCoseno(a: Float32Array, b: Float32Array): number {
+  let dot = 0
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i]
+  return dot
+}
+
+// Two-Stage Retrieval: candidatos amplios para re-ranking
+const TOP_K_CANDIDATOS = 50
+
 // === API publica ===
 
 /** Espera a que la hidratacion desde IndexedDB haya terminado */
@@ -132,16 +161,17 @@ export function esperarHidratacion(): Promise<void> {
 
 /** Obtiene los documentos RAG de una conversacion */
 export function obtenerDocumentos(conversacionId: string): DocumentoRAG[] {
-  return almacenesPorConversacion.get(conversacionId) ?? []
+  return almacenesPorConversacion.get(resolverIdConversacion(conversacionId)) ?? []
 }
 
 /** Agrega un documento al almacen */
 export function agregarDocumento(conversacionId: string, documento: DocumentoRAG): void {
-  const documentos = almacenesPorConversacion.get(conversacionId)
+  const idResuelto = resolverIdConversacion(conversacionId)
+  const documentos = almacenesPorConversacion.get(idResuelto)
   if (documentos) {
     documentos.push(documento)
   } else {
-    almacenesPorConversacion.set(conversacionId, [documento])
+    almacenesPorConversacion.set(idResuelto, [documento])
   }
 }
 
@@ -151,60 +181,63 @@ export function actualizarDocumento(
   documentoId: string,
   actualizaciones: Partial<DocumentoRAG>
 ): void {
-  const documentos = almacenesPorConversacion.get(conversacionId)
+  const idResuelto = resolverIdConversacion(conversacionId)
+  const documentos = almacenesPorConversacion.get(idResuelto)
   if (!documentos) return
 
   const indice = documentos.findIndex((d) => d.id === documentoId)
   if (indice !== -1) {
     documentos[indice] = { ...documentos[indice], ...actualizaciones }
     if (actualizaciones.estado === "listo") {
-      persistirEnIDB(conversacionId)
+      persistirEnIDB(idResuelto)
     }
   }
 }
 
 /** Elimina un documento del almacen y de IndexedDB */
 export function eliminarDocumento(conversacionId: string, documentoId: string): void {
-  const documentos = almacenesPorConversacion.get(conversacionId)
+  const idResuelto = resolverIdConversacion(conversacionId)
+  const documentos = almacenesPorConversacion.get(idResuelto)
   if (!documentos) return
 
   const indice = documentos.findIndex((d) => d.id === documentoId)
   if (indice !== -1) {
     documentos.splice(indice, 1)
-    persistirEnIDB(conversacionId)
+    persistirEnIDB(idResuelto)
   }
 }
 
-/** Limpia todos los documentos de una conversacion */
-export function limpiarAlmacen(conversacionId: string): void {
-  almacenesPorConversacion.delete(conversacionId)
-  eliminarDeIDB(conversacionId)
-}
-
-/** Transfiere documentos de un ID temporal a un ID de conversacion real */
+/** Transfiere documentos de un ID temporal a un ID de conversacion real.
+ *  Registra redireccion para que callbacks asincrónicos del Worker
+ *  que aun referencien el ID temporal encuentren los documentos. */
 export function transferirDocumentos(idOrigen: string, idDestino: string): void {
   const documentos = almacenesPorConversacion.get(idOrigen)
   if (!documentos) return
   almacenesPorConversacion.set(idDestino, documentos)
   almacenesPorConversacion.delete(idOrigen)
+  redirecciones.set(idOrigen, idDestino)
   persistirEnIDB(idDestino)
   eliminarDeIDB(idOrigen)
 }
 
-/** Busca los fragmentos mas similares por distancia de Hamming.
+/** Busca fragmentos similares con Two-Stage Retrieval:
+ *  Fase 1: Hamming binario rapido → top 50 candidatos (nanosegundos por fragmento)
+ *  Fase 2: Cosine similarity Float32 → re-ranking preciso de los top 10 definitivos
  *  Filtra resultados por debajo del umbral de similitud minima. */
 export function buscarFragmentosSimilares(
   conversacionId: string,
   embeddingConsulta: Uint8Array,
+  embeddingConsultaFloat?: Float32Array,
   topK: number = 10,
   idsDocumentosRecientes?: Set<string>
 ): ResultadoBusqueda[] {
-  const documentos = almacenesPorConversacion.get(conversacionId)
+  const documentos = almacenesPorConversacion.get(resolverIdConversacion(conversacionId))
   if (!documentos) return []
 
   const BOOST_RECENCIA = 0.10
-  const resultados: ResultadoBusqueda[] = []
+  const candidatos: ResultadoBusqueda[] = []
 
+  // Fase 1: Hamming binario — filtrado rapido de candidatos
   for (const documento of documentos) {
     if (documento.estado !== "listo") continue
 
@@ -214,13 +247,28 @@ export function buscarFragmentosSimilares(
       let similitud = similitudBinaria(embeddingConsulta, fragmento.embedding)
       if (esReciente) similitud += BOOST_RECENCIA
       if (similitud >= UMBRAL_SIMILITUD_MINIMA) {
-        resultados.push({ fragmento, similitud, nombreDocumento: documento.nombre, totalFragmentosDocumento: totalFragmentos })
+        candidatos.push({ fragmento, similitud, nombreDocumento: documento.nombre, totalFragmentosDocumento: totalFragmentos })
       }
     }
   }
 
-  resultados.sort((a, b) => b.similitud - a.similitud)
-  return resultados.slice(0, topK)
+  candidatos.sort((a, b) => b.similitud - a.similitud)
+  const preseleccionados = candidatos.slice(0, TOP_K_CANDIDATOS)
+
+  // Fase 2: Re-rank con cosine Float32 (si hay embeddings Float32 disponibles)
+  if (embeddingConsultaFloat && preseleccionados.length > 0) {
+    for (const r of preseleccionados) {
+      if (r.fragmento.embeddingFloat) {
+        const esReciente = idsDocumentosRecientes?.has(r.fragmento.documentoId) ?? false
+        r.similitud = similitudCoseno(embeddingConsultaFloat, r.fragmento.embeddingFloat)
+        if (esReciente) r.similitud += BOOST_RECENCIA
+      }
+      // Si no tiene embeddingFloat (doc viejo de IDB), conserva la similitud Hamming
+    }
+    preseleccionados.sort((a, b) => b.similitud - a.similitud)
+  }
+
+  return preseleccionados.slice(0, topK)
 }
 
 /** Obtiene estadisticas del almacen de una conversacion */
@@ -229,7 +277,7 @@ export function obtenerEstadisticas(conversacionId: string): {
   documentosListos: number
   totalFragmentos: number
 } {
-  const documentos = almacenesPorConversacion.get(conversacionId)
+  const documentos = almacenesPorConversacion.get(resolverIdConversacion(conversacionId))
   if (!documentos) return { totalDocumentos: 0, documentosListos: 0, totalFragmentos: 0 }
 
   let documentosListos = 0
@@ -247,7 +295,22 @@ export function obtenerEstadisticas(conversacionId: string): {
 
 /** Verifica si hay fragmentos listos para busqueda */
 export function tieneFragmentosListos(conversacionId: string): boolean {
-  const documentos = almacenesPorConversacion.get(conversacionId)
+  const documentos = almacenesPorConversacion.get(resolverIdConversacion(conversacionId))
   if (!documentos) return false
   return documentos.some((d) => d.estado === "listo" && d.fragmentos.length > 0)
+}
+
+/** Limpia todos los datos RAG asociados a una conversacion:
+ *  documentos en memoria, redirecciones que apuntan a este ID, e IndexedDB.
+ *  Llamar al eliminar una conversacion para evitar memory leaks. */
+export function limpiarDatosConversacion(conversacionId: string): void {
+  const idResuelto = resolverIdConversacion(conversacionId)
+  almacenesPorConversacion.delete(idResuelto)
+  eliminarDeIDB(idResuelto)
+  // Limpiar redirecciones que apuntan a este ID
+  for (const [origen, destino] of redirecciones) {
+    if (destino === idResuelto || origen === conversacionId) {
+      redirecciones.delete(origen)
+    }
+  }
 }

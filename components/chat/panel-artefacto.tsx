@@ -1,12 +1,29 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { X, Copy, Check, Download, Eye, Code2, Pencil } from "lucide-react"
 import { useArtefacto } from "@/lib/contexto-artefacto"
-import { useCopiarAlPortapapeles, useScrollAlFondo } from "@/lib/hooks"
+import { useCopiarAlPortapapeles } from "@/lib/hooks"
 import { CodigoConResaltado, NOMBRES_LENGUAJE, EXTENSIONES_DESCARGA } from "./bloque-codigo"
 import { cn } from "@/lib/utils"
 import { RenderizadorMarkdown } from "./renderizador-markdown"
+
+// Estilos sincronizados con oneLight de react-syntax-highlighter + estiloCodigoPanel
+// para que el textarea transparente se alinee pixel a pixel con el codigo resaltado
+const ESTILOS_EDITOR: React.CSSProperties = {
+  fontFamily: '"Fira Code","Fira Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace',
+  fontSize: "0.85rem",
+  lineHeight: "1.5",
+  padding: "1rem",
+  whiteSpace: "pre",
+  overflowWrap: "normal",
+  wordBreak: "normal",
+  tabSize: 2,
+  color: "transparent",
+  WebkitTextFillColor: "transparent",
+  caretColor: "var(--color-claude-texto)",
+  overflow: "hidden",
+}
 
 /** Descarga el contenido como archivo de texto */
 function descargarArchivo(contenido: string, nombreArchivo: string) {
@@ -21,19 +38,95 @@ function descargarArchivo(contenido: string, nombreArchivo: string) {
   URL.revokeObjectURL(url)
 }
 
-/** Vista previa sandboxed para HTML y SVG */
+/** Script inyectado en iframes para detectar bloqueos por bucle infinito.
+ *  Responde a pings del padre via postMessage. Si el event loop esta bloqueado,
+ *  el listener no puede ejecutarse y el padre detecta la falta de respuesta. */
+const SCRIPT_HEARTBEAT = `<script>window.addEventListener('message',function(e){if(e.data==='__ping__')e.source.postMessage('__pong__','*');});<\/script>`
+
+/** Inyecta el script de heartbeat en contenido HTML */
+function inyectarHeartbeat(html: string): string {
+  if (html.includes("<head>")) {
+    return html.replace("<head>", "<head>" + SCRIPT_HEARTBEAT)
+  }
+  if (/<html[\s>]/i.test(html)) {
+    return html.replace(/<html[^>]*>/, "$&<head>" + SCRIPT_HEARTBEAT + "</head>")
+  }
+  return SCRIPT_HEARTBEAT + html
+}
+
+/** Vista previa sandboxed para HTML y SVG con deteccion de bloqueos */
 function VistaPreviaArtefacto({ contenido, tipo }: { contenido: string; tipo: "html" | "svg" }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const [noResponde, establecerNoResponde] = useState(false)
+  const [clave, establecerClave] = useState(0)
+
   const srcDoc = tipo === "svg"
-    ? `<!DOCTYPE html><html><head><style>body{margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f9f9f9;}</style></head><body>${contenido}</body></html>`
-    : contenido
+    ? `<!DOCTYPE html><html><head>${SCRIPT_HEARTBEAT}<style>body{margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f9f9f9;}</style></head><body>${contenido}</body></html>`
+    : inyectarHeartbeat(contenido)
+
+  // Heartbeat: detectar si el iframe deja de responder
+  useEffect(() => {
+    const iframe = iframeRef.current
+    if (!iframe) return
+
+    let ultimoPong = Date.now()
+
+    function manejarMensaje(e: MessageEvent) {
+      if (e.data === "__pong__") {
+        ultimoPong = Date.now()
+        establecerNoResponde(false)
+      }
+    }
+
+    window.addEventListener("message", manejarMensaje)
+
+    const intervalo = setInterval(() => {
+      try {
+        iframe.contentWindow?.postMessage("__ping__", "*")
+      } catch {
+        // iframe destruido o no accesible
+      }
+
+      if (Date.now() - ultimoPong > 5000) {
+        establecerNoResponde(true)
+      }
+    }, 2000)
+
+    return () => {
+      window.removeEventListener("message", manejarMensaje)
+      clearInterval(intervalo)
+    }
+  }, [clave])
+
+  function recargar() {
+    establecerNoResponde(false)
+    establecerClave(k => k + 1)
+  }
 
   return (
-    <iframe
-      srcDoc={srcDoc}
-      sandbox="allow-scripts"
-      className="w-full h-full border-0 bg-white"
-      title="Vista previa del artefacto"
-    />
+    <div className="relative w-full h-full">
+      <iframe
+        key={clave}
+        ref={iframeRef}
+        srcDoc={srcDoc}
+        sandbox="allow-scripts"
+        className="w-full h-full border-0 bg-white"
+        title="Vista previa del artefacto"
+      />
+      {noResponde && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm gap-3">
+          <p className="text-sm text-[var(--color-claude-texto-secundario)]">
+            Este artefacto dejo de responder
+          </p>
+          <button
+            onClick={recargar}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--color-claude-sidebar)] hover:bg-[var(--color-claude-sidebar-hover)] text-[var(--color-claude-texto)] border border-[var(--color-claude-input-border)] transition-colors"
+          >
+            Recargar
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -124,18 +217,29 @@ function convertirLatexAMarkdown(latex: string): string {
   return texto.trim()
 }
 
-/** Panel lateral para visualizar artefactos (codigo, HTML, SVG, LaTeX) */
+/** Panel lateral para visualizar y editar artefactos (codigo, HTML, SVG, LaTeX).
+ *  El modo edicion usa un patron "overlay": textarea transparente superpuesto sobre
+ *  el codigo resaltado, manteniendo syntax highlighting mientras el usuario escribe. */
 export function PanelArtefacto() {
-  const { artefactoActivo, cerrarArtefacto, actualizarContenidoArtefacto } = useArtefacto()
+  // === Todos los hooks primero (antes de cualquier return condicional) ===
+  const { artefactoActivo, cerrarArtefacto, guardarEdicionUsuario } = useArtefacto()
   const { haCopiado, copiar } = useCopiarAlPortapapeles()
   const [modoVistaPrevia, establecerModoVistaPrevia] = useState(false)
   const [modoEdicion, establecerModoEdicion] = useState(false)
-  const { contenedorRef, irAlFondo } = useScrollAlFondo()
+  // Buffer local de edicion: desacoplado del contexto para evitar que el sync effect
+  // de BloqueCodigoConResaltado revierta las ediciones del usuario (patron react-simple-code-editor)
+  const [contenidoEditado, establecerContenidoEditado] = useState<string | null>(null)
+  const contenedorRef = useRef<HTMLDivElement>(null)
 
-  // Scroll al fondo al cambiar de artefacto
+  // Manejar edicion del contenido — escribe solo al estado local, no al contexto
+  const manejarCambioEdicion = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    establecerContenidoEditado(e.target.value)
+  }, [])
+
+  // Scroll al inicio al cambiar de artefacto (no al fondo como antes)
   useEffect(() => {
-    irAlFondo(false)
-  }, [artefactoActivo?.id, irAlFondo])
+    if (contenedorRef.current) contenedorRef.current.scrollTop = 0
+  }, [artefactoActivo?.id])
 
   // Restablecer modos al cambiar de artefacto (patron "ajustar estado durante render"):
   // markdown, svg, html, latex: preview por defecto; codigo: codigo por defecto
@@ -145,12 +249,16 @@ export function PanelArtefacto() {
     if (artefactoActivo) {
       establecerModoVistaPrevia(["markdown", "svg", "html", "latex"].includes(artefactoActivo.tipo))
       establecerModoEdicion(false)
+      establecerContenidoEditado(null)
     }
   }
 
+  // === Early return (todos los hooks ya fueron llamados) ===
   if (!artefactoActivo) return null
 
   const { tipo, titulo, contenido, lenguaje, totalLineas } = artefactoActivo
+  // En modo edicion, usar el buffer local; fuera de edicion, el contenido del contexto
+  const contenidoActual = contenidoEditado ?? contenido
   const nombreLenguaje = lenguaje ? (NOMBRES_LENGUAJE[lenguaje] ?? lenguaje) : tipo
   const tieneVistaPrevia = tipo === "html" || tipo === "svg" || tipo === "markdown" || tipo === "latex"
 
@@ -159,21 +267,39 @@ export function PanelArtefacto() {
       ? (EXTENSIONES_DESCARGA[lenguaje] ?? "txt")
       : tipo === "markdown" ? "md" : tipo === "svg" ? "svg" : tipo === "html" ? "html" : "txt"
     const nombreBase = titulo.includes(".") ? titulo : `${titulo}.${extension}`
-    descargarArchivo(contenido, nombreBase)
+    descargarArchivo(contenidoActual, nombreBase)
   }
-
-  // Manejar edición del contenido
-  const manejarCambioEdicion = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    actualizarContenidoArtefacto(e.target.value, e.target.value.split("\n").length)
-  }, [actualizarContenidoArtefacto])
 
   function alternarEdicion() {
     if (modoEdicion) {
+      // Salir de edicion: persistir cambios al contexto y limpiar buffer local
+      if (contenidoEditado !== null && contenidoEditado !== contenido) {
+        const lineasEditadas = contenidoEditado.split("\n").length
+        guardarEdicionUsuario(contenidoEditado, lineasEditadas)
+      }
       establecerModoEdicion(false)
+      establecerContenidoEditado(null)
       establecerModoVistaPrevia(tieneVistaPrevia)
     } else {
+      // Entrar en edicion: inicializar buffer local desde contenido actual del contexto
       establecerModoEdicion(true)
+      establecerContenidoEditado(contenido)
       establecerModoVistaPrevia(false)
+    }
+  }
+
+  /** Maneja Tab (inserta 2 espacios) para edicion fluida sin perder foco */
+  function manejarTeclaEdicion(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Tab") {
+      e.preventDefault()
+      const ta = e.currentTarget
+      const inicio = ta.selectionStart
+      const fin = ta.selectionEnd
+      const nuevo = contenidoActual.slice(0, inicio) + "  " + contenidoActual.slice(fin)
+      establecerContenidoEditado(nuevo)
+      requestAnimationFrame(() => {
+        ta.selectionStart = ta.selectionEnd = inicio + 2
+      })
     }
   }
 
@@ -186,7 +312,7 @@ export function PanelArtefacto() {
             {titulo}
           </h3>
           <span className="text-xs text-[var(--color-claude-texto-secundario)] shrink-0">
-            {nombreLenguaje} · {totalLineas} lineas
+            {nombreLenguaje} · {contenidoEditado ? contenidoActual.split("\n").length : totalLineas} lineas
           </span>
         </div>
 
@@ -225,7 +351,7 @@ export function PanelArtefacto() {
 
           {/* Copiar */}
           <button
-            onClick={() => copiar(contenido)}
+            onClick={() => copiar(contenidoActual)}
             className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors"
             title="Copiar contenido"
           >
@@ -257,35 +383,47 @@ export function PanelArtefacto() {
       {/* Contenido */}
       <div className={cn(
         "flex-1 min-h-0 relative",
-        !modoEdicion && !(tieneVistaPrevia && modoVistaPrevia) && "bg-[var(--color-claude-sidebar)]"
+        !(tieneVistaPrevia && modoVistaPrevia) && "bg-[var(--color-claude-sidebar)]"
       )}>
         <div ref={contenedorRef} className="absolute inset-0 overflow-auto">
           {modoEdicion ? (
-            /* Modo edición: textarea nativo monoespaciado */
-            <textarea
-              value={contenido}
-              onChange={manejarCambioEdicion}
-              className="w-full h-full p-4 bg-[var(--color-claude-sidebar)] text-[var(--color-claude-texto)] font-mono text-[0.85rem] leading-relaxed resize-none outline-none border-none"
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-            />
+            /* Modo edicion: patron overlay — textarea transparente sobre codigo resaltado.
+               El usuario ve syntax highlighting y escribe en el textarea invisible.
+               Los estilos (font, size, line-height, padding) estan sincronizados con
+               oneLight + estiloCodigoPanel para alineacion pixel a pixel. */
+            <div className="relative min-h-full">
+              {/* Capa visual: codigo resaltado (solo presentacion) */}
+              <div className="pointer-events-none select-none" aria-hidden="true">
+                <CodigoConResaltado codigo={contenidoActual + "\n"} lenguaje={lenguaje ?? "text"} />
+              </div>
+              {/* Capa de input: textarea transparente superpuesto */}
+              <textarea
+                value={contenidoActual}
+                onChange={manejarCambioEdicion}
+                onKeyDown={manejarTeclaEdicion}
+                className="absolute top-0 left-0 w-full h-full resize-none outline-none border-none bg-transparent selection:bg-blue-300/30"
+                style={ESTILOS_EDITOR}
+                spellCheck={false}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+              />
+            </div>
           ) : tieneVistaPrevia && modoVistaPrevia ? (
             tipo === "markdown" ? (
               <div className="p-6 prosa-markdown">
-                <RenderizadorMarkdown contenido={contenido} />
+                <RenderizadorMarkdown contenido={contenidoActual} />
               </div>
             ) : tipo === "latex" ? (
               /* LaTeX preview: convertir estructura a Markdown, preservar fórmulas */
               <div className="p-6 prosa-markdown">
-                <RenderizadorMarkdown contenido={convertirLatexAMarkdown(contenido)} />
+                <RenderizadorMarkdown contenido={convertirLatexAMarkdown(contenidoActual)} />
               </div>
             ) : (
-              <VistaPreviaArtefacto contenido={contenido} tipo={tipo as "html" | "svg"} />
+              <VistaPreviaArtefacto contenido={contenidoActual} tipo={tipo as "html" | "svg"} />
             )
           ) : (
-            <CodigoConResaltado codigo={contenido} lenguaje={lenguaje ?? "text"} />
+            <CodigoConResaltado codigo={contenidoActual} lenguaje={lenguaje ?? "text"} />
           )}
         </div>
       </div>

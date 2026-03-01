@@ -16,6 +16,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "El modelo más reciente y capaz de OpenAI",
     proveedor: "openai",
     categoria: "gpt-5.2",
+    ventanaContexto: 200_000,
+    maxTokensSalida: 32_768,
     tieneReasoning: true,
   },
 
@@ -26,6 +28,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Ideal para código, razonamiento y tareas agénticas",
     proveedor: "openai",
     categoria: "gpt-5.1",
+    ventanaContexto: 200_000,
+    maxTokensSalida: 32_768,
     tieneReasoning: true,
   },
 
@@ -36,6 +40,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Modelo base de propósito general de la familia GPT-5",
     proveedor: "openai",
     categoria: "gpt-5",
+    ventanaContexto: 200_000,
+    maxTokensSalida: 32_768,
     tieneReasoning: true,
   },
   {
@@ -44,6 +50,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Versión rápida y eficiente de GPT-5",
     proveedor: "openai",
     categoria: "gpt-5",
+    ventanaContexto: 128_000,
+    maxTokensSalida: 16_384,
     tieneReasoning: true,
   },
   {
@@ -52,6 +60,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "El modelo más rápido y ultra-económico de la familia GPT-5",
     proveedor: "openai",
     categoria: "gpt-5",
+    ventanaContexto: 128_000,
+    maxTokensSalida: 16_384,
     tieneReasoning: true,
   },
 
@@ -62,6 +72,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Modelo avanzado de la familia 4.1, versátil y preciso",
     proveedor: "openai",
     categoria: "gpt-4.1",
+    ventanaContexto: 1_047_576,
+    maxTokensSalida: 32_768,
   },
   {
     id: "gpt-4.1-mini",
@@ -69,6 +81,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Versión compacta y económica de GPT-4.1",
     proveedor: "openai",
     categoria: "gpt-4.1",
+    ventanaContexto: 1_047_576,
+    maxTokensSalida: 32_768,
   },
 
   // GPT-4o (multimodal, ampliamente soportado)
@@ -78,6 +92,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Modelo multimodal de propósito general",
     proveedor: "openai",
     categoria: "gpt-4o",
+    ventanaContexto: 128_000,
+    maxTokensSalida: 16_384,
   },
   {
     id: "gpt-4o-mini",
@@ -85,6 +101,8 @@ export const MODELOS_DISPONIBLES: ModeloDisponible[] = [
     descripcion: "Versión compacta y económica de GPT-4o",
     proveedor: "openai",
     categoria: "gpt-4o",
+    ventanaContexto: 128_000,
+    maxTokensSalida: 16_384,
   },
 ]
 

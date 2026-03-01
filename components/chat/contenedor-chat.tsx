@@ -10,6 +10,9 @@ import { useArtefacto } from "@/lib/contexto-artefacto"
 import { enviarMensajeConStreaming } from "@/lib/cliente-chat"
 import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { generarId, cn } from "@/lib/utils"
+import { countTokens } from "gpt-tokenizer/model/gpt-4o"
+import { obtenerModelo } from "@/lib/modelos"
+import { INSTRUCCIONES_SISTEMA } from "@/lib/constantes"
 import {
   debeUsarRAG,
   procesarDocumentoParaRAG,
@@ -22,6 +25,7 @@ import {
   obtenerDocumentos,
   transferirDocumentos,
   eliminarDocumento,
+  limpiarDatosConversacion,
 } from "@/lib/rag/almacen-vectores"
 
 // Intervalo minimo entre actualizaciones de UI durante streaming (ms).
@@ -29,9 +33,42 @@ import {
 // menor carga de renderizado que 30ms (33fps), especialmente con conversaciones largas.
 const INTERVALO_THROTTLE = 50
 
-// Limite de caracteres para el historial enviado a la API
-// ~150K chars ≈ 37K-50K tokens, deja margen para contexto RAG y output del modelo
-const LIMITE_CARACTERES_HISTORIAL = 150_000
+// Margen de seguridad para evitar cortar exacto en el limite del modelo.
+// Cubre: overhead per-message (~3 tokens/msg), tokens de herramientas (web_search), etc.
+const MARGEN_SEGURIDAD_TOKENS = 512
+
+// Cache de conteo de tokens por contenido de mensaje (evita recontar en cada envio)
+const cacheConteoTokens = new Map<string, number>()
+const TAMANO_MAX_CACHE = 500
+
+// Cache del conteo de tokens del system prompt (es estatico, se cuenta una sola vez)
+let tokensSystemPromptCache: number | null = null
+
+function contarTokensMensaje(contenido: string): number {
+  let tokens = cacheConteoTokens.get(contenido)
+  if (tokens === undefined) {
+    tokens = countTokens(contenido, { allowedSpecial: 'all' })
+    if (cacheConteoTokens.size >= TAMANO_MAX_CACHE) {
+      const primeraLlave = cacheConteoTokens.keys().next().value
+      if (primeraLlave !== undefined) cacheConteoTokens.delete(primeraLlave)
+    }
+    cacheConteoTokens.set(contenido, tokens)
+  }
+  return tokens
+}
+
+/** Calcula el presupuesto de tokens disponible para el historial de mensajes.
+ *  Formula: ventanaContexto - maxTokensSalida - tokensSystemPrompt - tokensRAG - margen
+ *  Esto previene colision entre historial, contexto RAG, system prompt y respuesta. */
+function calcularPresupuestoHistorial(idModelo: string, tokensRAG: number): number {
+  const modelo = obtenerModelo(idModelo)
+  const ventana = modelo?.ventanaContexto ?? 128_000
+  const maxSalida = modelo?.maxTokensSalida ?? 16_384
+  if (tokensSystemPromptCache === null) {
+    tokensSystemPromptCache = contarTokensMensaje(INSTRUCCIONES_SISTEMA)
+  }
+  return ventana - maxSalida - tokensSystemPromptCache - tokensRAG - MARGEN_SEGURIDAD_TOKENS
+}
 
 export function ContenedorChat() {
   const {
@@ -190,35 +227,56 @@ export function ContenedorChat() {
     return contexto + contenidoOriginal
   }
 
-  // Truncar historial para conversaciones largas que exceden el contexto del modelo
+  // Truncar historial para conversaciones largas que exceden el contexto del modelo.
+  // Usa conteo real de tokens (gpt-tokenizer) y recorta pares completos (usuario+asistente).
+  // El presupuesto es dinamico: calculado descontando system prompt, RAG, y max_output_tokens.
   function truncarHistorial(
-    mensajes: Array<{ rol: "usuario" | "asistente"; contenido: string }>
+    mensajes: Array<{ rol: "usuario" | "asistente"; contenido: string }>,
+    presupuesto: number
   ): Array<{ rol: "usuario" | "asistente"; contenido: string }> {
-    let totalCaracteres = mensajes.reduce((acc, m) => acc + m.contenido.length, 0)
-    if (totalCaracteres <= LIMITE_CARACTERES_HISTORIAL) return mensajes
+    let totalTokens = mensajes.reduce((acc, m) => acc + contarTokensMensaje(m.contenido), 0)
+    if (totalTokens <= presupuesto) return mensajes
 
-    // Recortar desde el inicio conservando al menos los ultimos 4 mensajes (2 intercambios)
+    // Recortar pares completos (usuario+asistente) desde el inicio
+    // para evitar mensajes huerfanos
     let inicio = 0
-    while (totalCaracteres > LIMITE_CARACTERES_HISTORIAL && inicio < mensajes.length - 4) {
-      totalCaracteres -= mensajes[inicio].contenido.length
+    while (totalTokens > presupuesto && inicio < mensajes.length - 4) {
+      totalTokens -= contarTokensMensaje(mensajes[inicio].contenido)
+      inicio++
+      // Si acabamos de quitar un mensaje de usuario, quitar tambien la respuesta del asistente
+      if (inicio < mensajes.length - 4 &&
+          mensajes[inicio - 1].rol === "usuario" &&
+          mensajes[inicio]?.rol === "asistente") {
+        totalTokens -= contarTokensMensaje(mensajes[inicio].contenido)
+        inicio++
+      }
+    }
+
+    // Asegurar que no empezamos con una respuesta huerfana
+    if (inicio > 0 && inicio < mensajes.length && mensajes[inicio].rol === "asistente") {
       inicio++
     }
 
     return mensajes.slice(inicio)
   }
 
-  // Helper compartido para enviar mensajes al modelo con streaming
+  // Helper compartido para enviar mensajes al modelo con streaming.
+  // Recibe el historial YA con contexto RAG inyectado en el ultimo mensaje.
+  // Calcula presupuesto dinamico considerando tokens RAG y trunca si es necesario.
   async function enviarConsultaAlModelo(
     idConversacion: string,
     historialMensajes: Array<{ rol: "usuario" | "asistente"; contenido: string }>,
     adjuntos?: Adjunto[],
     debeGenerarTitulo?: boolean,
-    contenidoParaTitulo?: string
+    contenidoParaTitulo?: string,
+    tokensContextoRAG?: number
   ) {
     establecerMensajeError(null)
 
-    // Truncar historial si excede el limite del modelo
-    const historialFinal = truncarHistorial(historialMensajes)
+    // Presupuesto dinamico: descontar system prompt, RAG, max_output y margen
+    const idModelo = obtenerModeloSeleccionado()
+    const presupuesto = calcularPresupuestoHistorial(idModelo, tokensContextoRAG ?? 0)
+    const historialFinal = truncarHistorial(historialMensajes, presupuesto)
 
     const controlador = new AbortController()
     referenciaControlador.current = controlador
@@ -351,6 +409,11 @@ export function ContenedorChat() {
     // Obtener contenido aumentado con contexto RAG si hay documentos indexados
     const contenidoConContexto = await obtenerContenidoConContextoRAG(idConversacion, contenido, idsDocumentosRecientes)
 
+    // Contar tokens del contexto RAG para presupuesto dinamico
+    const tokensRAG = contenidoConContexto !== contenido
+      ? contarTokensMensaje(contenidoConContexto) - contarTokensMensaje(contenido)
+      : 0
+
     const historialMensajes = [
       ...mensajesPrevios.map((m) => ({
         rol: m.rol,
@@ -364,7 +427,8 @@ export function ContenedorChat() {
       historialMensajes,
       adjuntosParaAPI,
       esPrimerMensaje,
-      contenido
+      contenido,
+      tokensRAG
     )
   }
 
@@ -394,6 +458,11 @@ export function ContenedorChat() {
     // Obtener contenido aumentado con contexto RAG (ahora con el indicador ya visible)
     const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, nuevoContenido)
 
+    // Contar tokens del contexto RAG para presupuesto dinamico
+    const tokensRAG = contenidoConContexto !== nuevoContenido
+      ? contarTokensMensaje(contenidoConContexto) - contarTokensMensaje(nuevoContenido)
+      : 0
+
     // Completar historial con el contenido aumentado
     const historialMensajes = [...historialBase, { rol: "usuario" as const, contenido: contenidoConContexto }]
 
@@ -404,7 +473,8 @@ export function ContenedorChat() {
       historialMensajes,
       mensajeOriginal.adjuntos,
       esPrimerMensaje,
-      nuevoContenido
+      nuevoContenido,
+      tokensRAG
     )
   }
 
@@ -434,6 +504,11 @@ export function ContenedorChat() {
     // Obtener contenido aumentado con contexto RAG (con indicador ya visible)
     const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensaje.contenido)
 
+    // Contar tokens del contexto RAG para presupuesto dinamico
+    const tokensRAG = contenidoConContexto !== mensaje.contenido
+      ? contarTokensMensaje(contenidoConContexto) - contarTokensMensaje(mensaje.contenido)
+      : 0
+
     const historialMensajes = [...historialBase, { rol: "usuario" as const, contenido: contenidoConContexto }]
     const esPrimerMensaje = indiceMensaje === 0
 
@@ -442,7 +517,8 @@ export function ContenedorChat() {
       historialMensajes,
       mensaje.adjuntos,
       esPrimerMensaje,
-      mensaje.contenido
+      mensaje.contenido,
+      tokensRAG
     )
   }
 
@@ -479,6 +555,11 @@ export function ContenedorChat() {
     // Obtener contenido aumentado con contexto RAG (con indicador ya visible)
     const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensajeUsuario.contenido)
 
+    // Contar tokens del contexto RAG para presupuesto dinamico
+    const tokensRAG = contenidoConContexto !== mensajeUsuario.contenido
+      ? contarTokensMensaje(contenidoConContexto) - contarTokensMensaje(mensajeUsuario.contenido)
+      : 0
+
     const historialMensajes = [...historialBase, { rol: "usuario" as const, contenido: contenidoConContexto }]
     const esPrimerMensaje = indiceUsuario === 0
 
@@ -487,7 +568,8 @@ export function ContenedorChat() {
       historialMensajes,
       mensajeUsuario.adjuntos,
       esPrimerMensaje,
-      mensajeUsuario.contenido
+      mensajeUsuario.contenido,
+      tokensRAG
     )
   }
 
@@ -505,6 +587,11 @@ export function ContenedorChat() {
     establecerDocumentosRAG([])
     idRAGTemporal.current = null
     cerrarArtefacto()
+  }
+
+  function manejarEliminarConversacion(id: string) {
+    limpiarDatosConversacion(id)
+    eliminarConversacion(id)
   }
 
   // === Drag-and-drop global (desde carpetas externas a cualquier parte de la pagina) ===
@@ -559,7 +646,7 @@ export function ContenedorChat() {
         alAlternar={alternarBarraLateral}
         alNuevaConversacion={manejarNuevaConversacion}
         alSeleccionarConversacion={manejarSeleccionarConversacion}
-        alEliminarConversacion={eliminarConversacion}
+        alEliminarConversacion={manejarEliminarConversacion}
         alRenombrarConversacion={renombrarConversacion}
       />
 

@@ -6,7 +6,7 @@ interface OpcionesFragmentacion {
   solapamiento?: number
 }
 
-export interface Fragmento {
+interface Fragmento {
   texto: string
   indice: number
   inicio: number

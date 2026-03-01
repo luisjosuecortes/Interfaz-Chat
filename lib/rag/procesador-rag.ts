@@ -76,6 +76,7 @@ export async function procesarDocumentoParaRAG(
       documentoId,
       texto: fp.texto,
       embedding: fp.embedding,
+      embeddingFloat: fp.embeddingFloat,
       indice: fp.indice,
       metadatos: { inicio: fp.inicio, fin: fp.fin },
     }))
@@ -109,8 +110,8 @@ export async function buscarContextoRelevante(
 
   if (!tieneFragmentosListos(conversacionId)) return []
 
-  const embeddingConsulta = await generarEmbedding(consulta)
-  return buscarFragmentosSimilares(conversacionId, embeddingConsulta, topK, idsDocumentosRecientes)
+  const { binario, float } = await generarEmbedding(consulta)
+  return buscarFragmentosSimilares(conversacionId, binario, float, topK, idsDocumentosRecientes)
 }
 
 /** Grupo de fragmentos adyacentes fusionados del mismo documento */
@@ -169,31 +170,28 @@ function fusionarFragmentosAdyacentes(resultados: ResultadoBusqueda[]): GrupoFra
 }
 
 /** Construye el texto de contexto para inyectar en el prompt del LLM.
- *  Fusiona fragmentos adyacentes e incluye posicion en el documento. */
+ *  Usa estructura XML para marcadores fuertes que los LLMs atienden mejor.
+ *  Fusiona fragmentos adyacentes e incluye posicion en el documento.
+ *  La instruccion va al final (posicion de recencia) para maxima atencion del modelo. */
 export function construirContextoParaPrompt(resultados: ResultadoBusqueda[]): string {
   if (resultados.length === 0) return ""
 
   const grupos = fusionarFragmentosAdyacentes(resultados)
 
-  const fragmentosTexto = grupos.map((grupo, i) => {
+  const fragmentosXML = grupos.map((grupo, i) => {
     const posicion = grupo.indiceInicio === grupo.indiceFin
       ? `seccion ${grupo.indiceInicio + 1} de ${grupo.totalFragmentos}`
       : `secciones ${grupo.indiceInicio + 1}-${grupo.indiceFin + 1} de ${grupo.totalFragmentos}`
 
-    return `[Fragmento ${i + 1}] (Fuente: ${grupo.nombreDocumento}, ${posicion})\n${grupo.texto}`
+    return `<fragmento indice="${i + 1}" fuente="${grupo.nombreDocumento}" posicion="${posicion}">\n${grupo.texto}\n</fragmento>`
   })
 
   return [
-    "--- CONTEXTO DE DOCUMENTOS SUBIDOS ---",
+    "<contexto-documentos>",
+    fragmentosXML.join("\n\n"),
+    "</contexto-documentos>",
     "",
-    "Usa la siguiente informacion extraida de los documentos del usuario para responder su pregunta.",
-    "Los fragmentos estan ordenados por posicion en el documento. La posicion (seccion X de Y) indica de donde proviene cada fragmento.",
-    "",
-    fragmentosTexto.join("\n\n"),
-    "",
-    "--- FIN DEL CONTEXTO ---",
-    "",
-    "Pregunta del usuario:",
+    "<instruccion>Usa la informacion de los fragmentos anteriores para responder la pregunta del usuario. Cita las fuentes cuando sea relevante.</instruccion>",
     "",
   ].join("\n")
 }

@@ -177,7 +177,7 @@ const pluginsRehype = [[rehypeKatex, opcionesKatex]] as Parameters<typeof ReactM
 // Componentes personalizados para react-markdown
 const componentesMarkdown: Components = {
   // Bloques de codigo e inline code
-  code({ children, className, ...resto }) {
+  code({ children, className, node, ...resto }) {
     const coincidenciaLenguaje = /language-(\w+)/.exec(className || "")
 
     // Si tiene clase de lenguaje, es un bloque de codigo (fenced)
@@ -186,6 +186,7 @@ const componentesMarkdown: Components = {
         <BloqueCodigoConResaltado
           codigo={String(children).replace(/\n$/, "")}
           lenguaje={coincidenciaLenguaje[1]}
+          posicionOrigen={node?.position?.start?.offset}
         />
       )
     }
