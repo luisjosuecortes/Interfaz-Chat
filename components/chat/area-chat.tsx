@@ -99,10 +99,8 @@ export function AreaChat({
 
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden relative">
-      {/* Barra superior flotante: boton sidebar + titulo.
-          Se oculta cuando el panel de artefactos esta abierto para evitar
-          solapamiento visual (en lg: ambos paneles coexisten). */}
-      <div className={`absolute top-3 left-3 z-20 flex items-center gap-1 transition-opacity duration-200 ${artefactoActivo ? "lg:opacity-0 lg:pointer-events-none" : ""}`}>
+      {/* Barra superior flotante: boton sidebar + titulo. */}
+      <div className="absolute top-3 left-3 z-20 flex items-center gap-1">
         {!estaBarraLateralAbierta && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -119,29 +117,31 @@ export function AreaChat({
           </Tooltip>
         )}
 
-        {/* Titulo de la conversacion editable */}
-        {estaEditandoTitulo ? (
-          <input
-            ref={referenciaInputTitulo}
-            type="text"
-            value={tituloEdicion}
-            onChange={(e) => establecerTituloEdicion(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") confirmarEdicionTitulo()
-              if (e.key === "Escape") cancelarEdicionTitulo()
-            }}
-            onBlur={confirmarEdicionTitulo}
-            className="w-56 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-sm font-medium px-3 py-1.5 rounded-lg border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-texto)]"
-          />
-        ) : (
-          <button
-            onClick={iniciarEdicionTitulo}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors max-w-[260px] cursor-pointer"
-          >
-            <span className="truncate">{conversacion.titulo || "Nueva conversacion"}</span>
-            <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-claude-texto)]/50" />
-          </button>
-        )}
+        {/* Titulo de la conversacion editable. Se oculta cuando el panel de artefactos esta abierto en lg: para evitar solapamiento visual. */}
+        <div className={`flex items-center transition-opacity duration-200 ${artefactoActivo ? "lg:opacity-0 lg:pointer-events-none" : ""}`}>
+          {estaEditandoTitulo ? (
+            <input
+              ref={referenciaInputTitulo}
+              type="text"
+              value={tituloEdicion}
+              onChange={(e) => establecerTituloEdicion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") confirmarEdicionTitulo()
+                if (e.key === "Escape") cancelarEdicionTitulo()
+              }}
+              onBlur={confirmarEdicionTitulo}
+              className="w-56 bg-[var(--color-claude-input)] text-[var(--color-claude-texto)] text-sm font-medium px-3 py-1.5 rounded-lg border border-[var(--color-claude-input-border)] outline-none focus:border-[var(--color-claude-texto)]"
+            />
+          ) : (
+            <button
+              onClick={iniciarEdicionTitulo}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)] transition-colors max-w-[260px] cursor-pointer"
+            >
+              <span className="truncate">{conversacion.titulo || "Nueva conversacion"}</span>
+              <ChevronDown className="h-3 w-3 shrink-0 text-[var(--color-claude-texto)]/50" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Mensajes: el hook gestiona el scroll listener internamente */}

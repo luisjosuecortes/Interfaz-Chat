@@ -2,7 +2,7 @@
 
 ## Descripcion General
 
-PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales, artefactos con panel lateral (codigo, HTML, SVG), ejecucion local de codigo (JavaScript via iframe sandboxed, Python via Pyodide WASM con cache persistente), herramienta de ejecucion via function calling (el modelo puede invocar `ejecutar_codigo` y recibir resultados) y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
+PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales, artefactos con panel lateral (codigo, HTML, SVG), ejecucion local de codigo (JavaScript via iframe sandboxed, Python via Web Worker dedicado con Pyodide WASM y cache persistente), herramienta de ejecucion via function calling (el modelo puede invocar `ejecutar_codigo` y recibir resultados) y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
 
 ---
 
@@ -62,7 +62,8 @@ chatslm/
 │   ├── cliente-chat.ts           # Cliente de streaming para la API (con soporte tool calling)
 │   ├── constantes.ts             # Constantes compartidas cliente/servidor (INSTRUCCIONES_SISTEMA con CODE EXECUTION)
 │   ├── contexto-artefacto.tsx    # React Context para artefactos + estado de ejecucion de codigo
-│   ├── ejecutor-codigo.ts        # Motor de ejecucion local: JS (iframe sandbox) + Python (Pyodide WASM + Cache API)
+│   ├── ejecutor-codigo.ts        # Motor de ejecucion local: JS (iframe sandbox) + Python (Web Worker con Pyodide WASM)
+│   ├── worker-pyodide.ts         # Web Worker dedicado: Pyodide WASM, Cache API, try/finally matplotlib, protocolo postMessage
 │   ├── hooks.ts                  # Hooks personalizados reutilizables
 │   ├── modelos.ts                # Catalogo de modelos y proveedores de IA (con ventanaContexto/maxTokensSalida)
 │   ├── preprocesar-imagen.ts     # Preprocesamiento de imagenes (resize + compress con Canvas API)
@@ -769,12 +770,12 @@ ProveedorArtefacto (page.tsx)
 - **Provider value memoizado**: `useMemo` envuelve el objeto `value` del Provider con dependencias explicitas. Sin esto, cada render del Provider creaba un nuevo objeto y forzaba re-render de TODOS los consumers via `Object.is()`. Este fix, junto con el guard por ID, resuelve el crash "Maximum update depth exceeded" durante streaming de artefactos.
 - **`refEjecucionExterna`**: Ref booleano que protege las ejecuciones iniciadas por tool calls del modelo. Cuando es `true`, `abrirArtefacto` se convierte en no-op, evitando que el auto-open de `bloque-codigo.tsx` resetee `estadoEjecucion` durante una ejecucion en curso. Se activa en `abrirYEjecutarArtefacto` y se desactiva en su `finally`.
 
-### `ejecutor-codigo.ts` - Motor de Ejecucion Local de Codigo
+### `ejecutor-codigo.ts` - Motor de Ejecucion Local de Codigo (Manager)
 
-Motor de ejecucion de codigo en el navegador. Soporta dos familias de lenguajes con arquitecturas completamente distintas:
+Motor de ejecucion de codigo en el navegador. Arquitectura en dos capas:
 
-- **JavaScript/TypeScript**: iframe sandboxed aislado (nuevo por cada ejecucion)
-- **Python**: Pyodide WASM (singleton lazy, cacheado persistentemente via Cache API)
+- **JavaScript/TypeScript**: iframe sandboxed aislado (nuevo por cada ejecucion), ejecutado en el hilo principal
+- **Python**: delegado a un **Web Worker dedicado** (`worker-pyodide.ts`) con Pyodide WASM. El hilo principal actua como manager del Worker: lo crea, le envia codigo, recibe resultados via `postMessage`, y lo termina si excede el timeout
 
 **Constantes:**
 
@@ -782,13 +783,9 @@ Motor de ejecucion de codigo en el navegador. Soporta dos familias de lenguajes 
 |-----------|-------|-------------|
 | `LENGUAJES_EJECUTABLES` | `javascript`, `js`, `typescript`, `ts`, `jsx`, `tsx`, `python`, `py` | Set de lenguajes soportados |
 | `TIMEOUT_EJECUCION_MS` | `10_000` (10s) | Tiempo maximo de ejecucion |
-| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes | Stdlib + cientificos disponibles en Pyodide 0.27.5 |
-| `PYODIDE_CDN` | `https://cdn.jsdelivr.net/pyodide/v0.27.5/full/` | URL del CDN de Pyodide |
-| `NOMBRE_CACHE_PYODIDE` | `pyodide-v0.27.5` | Nombre del cache persistente |
-| `ORIGEN_SANDBOX` | `__ejecutor_penguin__` | Identificador para filtrar postMessages |
+| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes | Stdlib + cientificos disponibles en Pyodide 0.27.5 (duplicado del Worker para validacion en UI) |
+| `ORIGEN_SANDBOX` | `__ejecutor_penguin__` | Identificador para filtrar postMessages del iframe JS |
 | `MARCADOR_IMAGEN_BASE64` | `__IMG_BASE64__:` | Prefijo en stdout para identificar imagenes base64 capturadas por matplotlib |
-| `PREAMBLE_MATPLOTLIB` | (template Python) | Configura matplotlib con backend Agg (no-GUI) antes del codigo del usuario |
-| `EPILOGUE_MATPLOTLIB` | (template Python) | Captura figuras matplotlib como PNG base64 y las imprime con marcador especial |
 
 **Funciones exportadas:**
 
@@ -798,16 +795,8 @@ Motor de ejecucion de codigo en el navegador. Soporta dos familias de lenguajes 
 | `ejecutarCodigo(codigo, lenguaje)` | Ejecuta codigo y retorna `ResultadoEjecucion` |
 | `obtenerEstadoPyodide()` | Retorna estado actual de Pyodide (`inactivo` \| `cargando` \| `listo` \| `error`) |
 | `validarImportsPython(codigo)` | Retorna lista de imports no disponibles en Pyodide (vacia si todo OK) |
-
-**Cache API persistente (`fetchConCache`):**
-
-Estrategia cache-first para Pyodide (~11MB WASM) y paquetes Python:
-1. Intenta leer de `caches.open("pyodide-v0.27.5")`
-2. Si hay hit, retorna sin red
-3. Si no, descarga via `fetch()`, guarda en cache, retorna
-4. Si la Cache API no esta disponible (SSR), usa `fetch()` normal
-
-Se integra en `loadPyodide()` via el parametro `fetch: fetchConCache`. Esto cachea automaticamente el WASM, los scripts JS y los paquetes Python (.whl) que el usuario importe. Se solicita `navigator.storage.persist()` al primer uso para evitar eviccion.
+| `detectarUsoInput(codigo)` | Detecta si el codigo Python usa `input()` (no disponible en WASM) |
+| `estaEjecutandoCodigo()` | Indica si hay una ejecucion de Python en curso (para guards en la UI) |
 
 **Ejecutor JavaScript (iframe sandboxed):**
 
@@ -820,22 +809,119 @@ Crea un iframe nuevo para cada ejecucion (no reutiliza) por seguridad:
 - Timeout via `setTimeout` en el padre + destruccion del iframe
 - El iframe se elimina del DOM con 100ms de retraso para permitir mensajes finales
 
-**Ejecutor Python (Pyodide WASM):**
+**Manager del Worker Python:**
 
-Singleton lazy: Pyodide se carga solo al primer uso de Python y persiste en memoria:
-- `loadPyodide()` con `fetch: fetchConCache` para cache persistente
-- Despues de cargar, override de `input()` y `sys.stdin`:
-  ```python
-  sys.stdin = io.StringIO('')
-  builtins.input = lambda prompt='': raise EOFError('input() no disponible...')
-  ```
-  Esto previene `OSError: [Errno 29] I/O error` cuando codigo Python usa `input()` (Pyodide WASM no tiene stdin interactivo)
-- `loadPackagesFromImports(codigo)` carga paquetes automaticamente (numpy, pandas, etc.)
-- **Pre-validacion de imports** (`validarImportsPython`): antes de `loadPackagesFromImports`, extrae los top-level imports del codigo via regex y los valida contra `PAQUETES_PYODIDE_DISPONIBLES`. Si hay paquetes no disponibles, retorna error claro en vez del criptico `ModuleNotFoundError`. Ademas, `loadPackagesFromImports` se ejecuta dentro de try-catch para capturar errores de carga de paquetes
-- Paquetes descargados se cachean via el mismo `fetchConCache`
-- Redireccion de stdout/stderr via `setStdout`/`setStderr` (batched callbacks)
-- Timeout via `Promise.race` contra `promesaTimeout`
-- La ultima expresion evaluada se captura como resultado (tipo "resultado")
+El hilo principal no ejecuta Python directamente. Gestiona un Worker dedicado (`worker-pyodide.ts`):
+
+- **`obtenerWorker()`**: crea el Worker la primera vez con `new Worker(new URL("./worker-pyodide.ts", import.meta.url))` y espera el mensaje `{tipo: "estado", estado: "listo"}`. Las llamadas subsiguientes retornan el Worker existente inmediatamente. Si el Worker reporta error, la promesa se rechaza y se puede reintentar
+- **`ejecutarPython(codigo)`**: gestiona el ciclo completo de ejecucion:
+  1. **Mutex** (cola de promesas FIFO): solo una ejecucion activa a la vez. Cada llamada registra su turno y espera al anterior
+  2. **Pre-validacion de imports**: en el hilo principal para error rapido sin crear Worker
+  3. **Envia al Worker**: `{tipo: "ejecutar", id: idEjecucion, codigo}`
+  4. **Escucha mensajes**: acumula `stdout`/`stderr` en array de salidas, resuelve al recibir `resultado`
+  5. **Timeout real**: `setTimeout` en el hilo principal funciona correctamente porque WASM corre en el Worker, no aqui. Si el Worker no responde en 10s, `worker.terminate()` lo destruye y se recrea en la proxima ejecucion
+  6. **Post-procesamiento**: `postProcesarImagenes()` convierte marcadores `__IMG_BASE64__:` en entradas tipo `"imagen"` con data URL
+- **`solicitarAlmacenamientoPersistente()`**: se invoca al crear el Worker. `navigator.storage.persist()` solo funciona desde el hilo principal (no disponible en Workers para el dominio `storage.persist()`)
+- **Flag `ejecucionEnCurso`**: se activa dentro del mutex `try` y se desactiva en `finally`, consultable via `estaEjecutandoCodigo()`
+
+**Mutex de ejecucion (cola de promesas):**
+
+Pyodide (`runPythonAsync`) NO es reentrante: si dos ejecuciones corren simultaneamente, los callbacks de `setStdout`/`setStderr` se sobreescriben y los globals se corrompen. La cola de promesas serializa el acceso:
+
+```typescript
+let colaEjecucion: Promise<void> = Promise.resolve()
+
+async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
+  let liberar: () => void
+  const miTurno = new Promise<void>(r => { liberar = r })
+  const turnoAnterior = colaEjecucion
+  colaEjecucion = miTurno
+  await turnoAnterior  // Esperar a que termine la ejecucion anterior
+
+  try { /* ejecucion */ }
+  finally { liberar!() }  // Siempre liberar, incluso en error/timeout
+}
+```
+
+Este es el **segundo nivel de defensa**: el primer nivel es el guard en `contexto-artefacto.tsx` (`if (estadoEjecucion === "ejecutando") return`) que previene clicks duplicados en la UI.
+
+### `worker-pyodide.ts` - Web Worker de Python (Pyodide WASM)
+
+Web Worker dedicado que ejecuta Python via Pyodide en su propio hilo. Al correr en un Worker, el event loop del hilo principal (React) nunca se bloquea, incluso con loops infinitos (`while True: pass`). El Worker se puede terminar con `worker.terminate()` desde el manager si excede el timeout.
+
+**Constantes (internas al Worker):**
+
+| Constante | Valor | Descripcion |
+|-----------|-------|-------------|
+| `PYODIDE_CDN` | `https://cdn.jsdelivr.net/pyodide/v0.27.5/full/` | URL del CDN de Pyodide |
+| `NOMBRE_CACHE_PYODIDE` | `pyodide-v0.27.5` | Nombre del cache persistente |
+| `MARCADOR_IMAGEN_BASE64` | `__IMG_BASE64__:` | Prefijo para imagenes base64 de matplotlib |
+| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes | Duplicado para validacion dentro del Worker |
+
+**Singleton Pyodide:**
+
+Pyodide se carga lazy (primera ejecucion) y persiste como singleton dentro del Worker:
+- `loadPyodide()` con `fetch: fetchConCache` para cache persistente via Cache API
+- Despues de cargar, override de `input()` y `sys.stdin` para dar error claro
+- Reporta estado al hilo principal via `postMessage({tipo: "estado", estado: "listo"})`
+
+**Cache API persistente (`fetchConCache`):**
+
+Estrategia cache-first para Pyodide (~11MB WASM) y paquetes Python, ejecutada dentro del Worker (Cache API funciona en Web Workers):
+1. Intenta leer de `caches.open("pyodide-v0.27.5")`
+2. Si hay hit, retorna sin red
+3. Si no, descarga via `fetch()`, guarda en cache, retorna
+4. Si la Cache API no esta disponible, usa `fetch()` normal
+
+**`construirCodigoPython(codigoUsuario)` — Envoltorio try/except/finally:**
+
+Envuelve el codigo del usuario en una estructura que garantiza la captura de figuras matplotlib incluso cuando el codigo lanza una excepcion:
+
+```python
+import sys as __sys__
+__tiene_matplotlib__ = False
+try:
+    import matplotlib
+    matplotlib.use('agg')
+    __tiene_matplotlib__ = True
+except ImportError:
+    pass
+
+__excepcion_usuario__ = None
+try:
+    # (codigo del usuario indentado 4 espacios)
+    ...
+except Exception as __e__:
+    __excepcion_usuario__ = __e__
+    import traceback as __tb__
+    __tb__.print_exc()
+finally:
+    # SIEMPRE capturar figuras matplotlib (incluso con error)
+    if __tiene_matplotlib__:
+        # ... savefig → BytesIO → base64 → print con marcador __IMG_BASE64__:
+        __plt__.close('all')
+```
+
+El codigo del usuario se indenta 4 espacios por linea (lineas vacias se mantienen vacias). Post-ejecucion, el Worker verifica `pyodide.globals.get("__excepcion_usuario__")`: si es `null` → `exito: true`, si tiene valor → `exito: false` (el traceback ya fue impreso a stderr).
+
+**Handler principal (`self.onmessage`):**
+
+1. Carga Pyodide si no esta listo (`cargarPyodideEnWorker()`)
+2. Pre-valida imports contra `PAQUETES_PYODIDE_DISPONIBLES`
+3. Carga paquetes via `loadPackagesFromImports(codigo)` (numpy, pandas, etc.)
+4. Redirige stdout/stderr al hilo principal via `postMessage({tipo: "stdout"|"stderr", id, texto})`
+5. Ejecuta `construirCodigoPython(codigo)` via `runPythonAsync`
+6. Verifica `__excepcion_usuario__` y envia resultado al hilo principal
+
+**Protocolo de mensajes Worker:**
+
+| Direccion | Tipo | Payload |
+|-----------|------|---------|
+| → Worker | `ejecutar` | `{ id, codigo }` |
+| ← Main | `stdout` | `{ id, texto }` |
+| ← Main | `stderr` | `{ id, texto }` |
+| ← Main | `resultado` | `{ id, exito, error? }` |
+| ← Main | `estado` | `{ estado: "cargando" \| "listo" \| "error" }` |
 
 ---
 
@@ -1314,8 +1400,8 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 81. **Proteccion contra bucles infinitos en iframe** (`panel-artefacto.tsx`): `VistaPreviaArtefacto` inyecta un script de heartbeat en el `srcDoc` del iframe. El padre envia pings cada 2s via `postMessage`; si no recibe respuesta en 5s, muestra overlay "dejo de responder" con boton "Recargar" que destruye y recrea el iframe via React `key`. Patron inspirado en CodeSandbox. Protege contra codigo LLM con loops infinitos (`while(true)`) que bloquearian el event loop del iframe.
 82. **Fix crash por tokens especiales en conteo de tokens** (`contenedor-chat.tsx`): `contarTokensMensaje()` llamaba a `countTokens(contenido)` de `gpt-tokenizer` sin opciones, lo que causaba un error de runtime `Disallowed special token found: <|endoftext|>` cuando el contenido de un mensaje incluia tokens especiales literales (ej: conversaciones sobre tokenizacion, prompts o formato interno de modelos). **Fix**: se pasa `{ allowedSpecial: 'all' }` como segundo argumento a `countTokens()`. Es seguro porque la funcion solo se usa para estimar el tamano del historial para truncamiento dinamico, no para enviar tokens al modelo. Los tokens especiales en el texto son texto literal del usuario/asistente, no instrucciones de control.
 83. **Fix editor de artefactos no dejaba editar (feedback loop)** (`panel-artefacto.tsx`): al escribir en el editor overlay del panel de artefactos, el texto se revertia instantaneamente al original, haciendo el editor inutilizable. **Causa raiz**: `manejarCambioEdicion` escribia al React Context (`actualizarContenidoArtefacto`), lo que disparaba el sync effect de `BloqueCodigoConResaltado` (bloque-codigo.tsx:409-413) — diseñado para sincronizar streaming→panel — que detectaba discrepancia entre el contenido editado y el `codigo` original del markdown y lo revertia. En desktop el chat permanece montado (`hidden lg:flex`) cuando el panel esta abierto, manteniendo el effect activo. **Fix**: las ediciones ahora viven en un buffer local `contenidoEditado` (estado `useState<string | null>`) completamente desacoplado del contexto. Al entrar en edicion se inicializa desde `artefactoActivo.contenido`; al salir se descarta (`null`). La variable derivada `contenidoActual = contenidoEditado ?? contenido` alimenta textarea, capa visual, copy, download, preview y conteo de lineas. `actualizarContenidoArtefacto` ya no se importa en el panel. El sync effect de streaming queda intacto en `bloque-codigo.tsx` sin modificaciones. Patron inspirado en `react-simple-code-editor` donde el estado de edicion es local y los props externos no lo sobreescriben.
-84. **Ejecucion local de codigo en el navegador** (`lib/ejecutor-codigo.ts`): motor de ejecucion dual que soporta JavaScript/TypeScript (iframe sandboxed aislado, nuevo por cada ejecucion) y Python (Pyodide WASM, singleton lazy). JavaScript se ejecuta via `eval()` dentro de un iframe con `sandbox="allow-scripts"` y CSP que bloquea red (`default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'`). Captura `console.log/error/warn/info` via `postMessage` con identificador `ORIGEN_SANDBOX`. Python se ejecuta via Pyodide (~11MB WASM) con carga lazy al primer uso, redireccion de stdout/stderr, carga automatica de paquetes (`loadPackagesFromImports`), y override de `input()`/`sys.stdin` para dar error claro en vez de I/O error criptico. Timeout de 10 segundos para ambos lenguajes. Lenguajes soportados: `javascript`, `js`, `typescript`, `ts`, `jsx`, `tsx`, `python`, `py`. **Soporte matplotlib**: el codigo Python se envuelve con `PREAMBLE_MATPLOTLIB` (configura backend Agg no-GUI) y `EPILOGUE_MATPLOTLIB` (captura figuras abiertas como PNG base64 via `savefig` a `BytesIO` → `base64.b64encode`). Las imagenes se imprimen con marcador `__IMG_BASE64__:` que `postProcesarImagenes()` convierte en entradas tipo `"imagen"` con data URL renderizable.
-85. **Cache persistente de Pyodide via Cache API** (`lib/ejecutor-codigo.ts`): estrategia cache-first para Pyodide WASM y paquetes Python. `fetchConCache()` intercepta todas las descargas: primero busca en `caches.open("pyodide-v0.27.5")`, si hay hit retorna sin red, si no descarga y guarda en cache. Se integra en `loadPyodide()` via el parametro `fetch`, cacheando automaticamente el WASM (~11MB), scripts JS y paquetes `.whl`. Se solicita `navigator.storage.persist()` al primer uso para evitar eviccion del cache. Despues de la primera descarga, las cargas subsiguientes son instantaneas desde cache.
+84. **Ejecucion local de codigo en el navegador** (`lib/ejecutor-codigo.ts`, `lib/worker-pyodide.ts`): motor de ejecucion en dos capas que soporta JavaScript/TypeScript (iframe sandboxed aislado, nuevo por cada ejecucion) y Python (Web Worker dedicado con Pyodide WASM). JavaScript se ejecuta via `eval()` dentro de un iframe con `sandbox="allow-scripts"` y CSP que bloquea red (`default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'`). Captura `console.log/error/warn/info` via `postMessage` con identificador `ORIGEN_SANDBOX`. Python se ejecuta en un **Web Worker dedicado** (`worker-pyodide.ts`) con Pyodide (~11MB WASM), carga lazy al primer uso, cache persistente via Cache API dentro del Worker, redireccion de stdout/stderr via `postMessage`, carga automatica de paquetes (`loadPackagesFromImports`), y override de `input()`/`sys.stdin`. El hilo principal actua como manager: crea el Worker, le envia codigo, recibe resultados, y lo termina con `worker.terminate()` si excede el timeout de 10 segundos (funciona porque WASM corre en el Worker, no en el hilo principal). Lenguajes soportados: `javascript`, `js`, `typescript`, `ts`, `jsx`, `tsx`, `python`, `py`. **Soporte matplotlib**: el Worker envuelve el codigo del usuario en `try/except/finally` via `construirCodigoPython()`: el preamble configura matplotlib Agg, el except captura excepciones con traceback, y el finally SIEMPRE captura figuras matplotlib como PNG base64 (incluso si el codigo lanzo una excepcion). Las imagenes se imprimen con marcador `__IMG_BASE64__:` que `postProcesarImagenes()` en el hilo principal convierte en entradas tipo `"imagen"` con data URL renderizable.
+85. **Cache persistente de Pyodide via Cache API** (`lib/worker-pyodide.ts`): estrategia cache-first para Pyodide WASM y paquetes Python, ejecutada **dentro del Web Worker** (Cache API funciona en Workers). `fetchConCache()` intercepta todas las descargas: primero busca en `caches.open("pyodide-v0.27.5")`, si hay hit retorna sin red, si no descarga y guarda en cache. Se integra en `loadPyodide()` via el parametro `fetch`, cacheando automaticamente el WASM (~11MB), scripts JS y paquetes `.whl`. Se solicita `navigator.storage.persist()` desde el hilo principal (manager en `ejecutor-codigo.ts`) al crear el Worker, ya que la API de persistencia de almacenamiento no esta disponible desde Workers. Despues de la primera descarga, las cargas subsiguientes son instantaneas desde cache.
 86. **Boton Ejecutar en bloques de codigo** (`bloque-codigo.tsx`, `panel-artefacto.tsx`): para lenguajes ejecutables (JS/TS/Python), tanto los bloques inline (<25 lineas) como los artefactos (>=25 lineas) muestran un boton "Ejecutar" (icono `Play`). En bloques inline, el handler `manejarEjecutarEnArtefacto` usa `abrirYEjecutarArtefacto()` del contexto, que recibe el artefacto como parametro y ejecuta directamente sin depender del estado de React — eliminando la race condition del patron anterior (`setTimeout(50ms)` + `ejecutarArtefacto()`). En artefactos ya abiertos, el boton esta directamente en la cabecera del panel. Los lenguajes no ejecutables (Go, Rust, CSS, etc.) no muestran el boton. **Validacion de imports**: para Python, si `validarImportsPython()` detecta imports no disponibles en Pyodide, el boton Ejecutar se oculta tanto en los bloques inline como en el panel de artefactos. **Ocultar con `input()`**: si el codigo Python usa `input()` (detectado por `detectarUsoInput()`), el boton se oculta completamente en vez de mostrarse deshabilitado, ya que `input()` no esta disponible en WASM. **Ejecucion per-bloque**: el boton Ejecutar esta siempre habilitado para bloques completos, incluso durante streaming de otros bloques. react-markdown solo renderiza bloques con fence de cierre (` ``` `), por lo que un bloque renderizado siempre contiene codigo completo. Se elimino `ejecucionDeshabilitada = estaGenerandose` que bloqueaba TODOS los botones durante cualquier streaming.
 87. **Consola de resultados en panel de artefactos** (`panel-artefacto.tsx`): componente `ConsolaResultados` con tema claro posicionado en la parte inferior del panel sobre un divisor (`border-t`). Barra de estado colapsable con icono animado (spinner durante ejecucion, circulo coloreado despues), duracion en ms y chevron de toggle. Area scrollable (`max-h-48`) con font mono `text-xs`. Colores por tipo: stdout negro, stderr ambar (`text-amber-600`), resultado verde (`text-emerald-600`), error rojo (`text-red-600`). Auto-scroll via `useEffect` que hace `scrollTop = scrollHeight` al cambiar salidas. Solo visible si hay ejecucion activa o hay salida.
 88. **Herramienta `ejecutar_codigo` via function calling** (`route.ts`, `contenedor-chat.tsx`): los modelos AI pueden invocar la funcion `ejecutar_codigo` con parametros `{lenguaje, codigo}` durante la generacion de respuesta. El backend define la herramienta con `strict: true` en el array de tools de la Responses API de OpenAI. Cuando el modelo emite un function call, el backend usa el evento `response.output_item.done` con `item.type === "function_call"` para extraer `name`, `arguments` y `call_id` del item completo (NOTA: el evento `response.function_call_arguments.done` solo contiene `arguments` e `item_id`, NO `name` ni `call_id`). El backend envia un evento SSE `tool_call` al frontend con `nombre`, `argumentos`, `callId` e `idRespuesta`, y cierra el stream. El frontend parsea los argumentos, inserta el bloque de codigo en el texto del asistente, ejecuta localmente via `ejecutarCodigo()`, y envia el resultado al modelo via `/api/chat/continuar` para que continue generando.
@@ -1335,12 +1421,18 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 
 102. **Titulo flotante se oculta con artefacto abierto** (`area-chat.tsx`): la barra superior flotante (boton sidebar + titulo de conversacion editable) se oculta automaticamente cuando el panel de artefactos esta abierto en pantallas grandes (`lg:`). Usa `lg:opacity-0 lg:pointer-events-none` con `transition-opacity duration-200` para una transicion suave. Lee `artefactoActivo` de `useArtefacto()`. En mobile no aplica porque el chat completo esta `hidden` cuando hay artefacto. Evita solapamiento visual entre el titulo y la cabecera del panel de artefactos.
 103. **Fix crash React "Maximum update depth exceeded"** (`contexto-artefacto.tsx`, `contexto-mensaje.tsx`, `bloque-codigo.tsx`): durante streaming de artefactos (codigo >=25 lineas), React entraba en un ciclo infinito de re-renders que crasheaba la app. **Causa raiz**: el `useEffect` de auto-apertura en `bloque-codigo.tsx:499-511` tenia `codigo` en sus dependencias y se disparaba cada ~50ms durante streaming, llamando `abrirArtefacto()` con un nuevo object literal. `Object.is()` siempre retornaba `false` para objetos nuevos, programando re-renders en cada tick. **3 amplificadores**: (1) Provider value de `ProveedorArtefacto` sin memoizar (cada render creaba nuevo objeto, forzando re-render de TODOS los consumers), (2) Provider value de `ProveedorMensaje` sin memoizar (mismo problema), (3) el sync effect separado (lineas 515-519) hacia `actualizarContenidoArtefacto()` en cada tick, duplicando setState. **Fix 4-partes**: (1a) Guard en `abrirArtefacto`: usa `setState(prev => prev?.id === artefacto.id ? prev : artefacto)` para no triggerear re-render si ya muestra el mismo artefacto. (1b) `useMemo` en Provider value de `ProveedorArtefacto` con dependencias explicitas. (1c) `useMemo` en Provider value de `ProveedorMensaje`. (1d) Gate en auto-open effect: `yaAbiertoAutoRef` (mutable ref via useState) se marca `true` al primer disparo, y el effect solo corre cuando `esArtefactoValido` transiciona de false a true. Dependencias reducidas a `[estaGenerandose, esArtefactoValido]`. El sync effect separado se mantiene intacto para actualizar contenido durante streaming.
-104. **Soporte matplotlib/graficos en consola de ejecucion** (`ejecutor-codigo.ts`, `tipos.ts`, `panel-artefacto.tsx`): los graficos generados con matplotlib en codigo Python ahora se renderizan como imagenes PNG dentro de la consola de resultados del panel de artefactos. **Pipeline**: (1) `PREAMBLE_MATPLOTLIB` se inyecta antes del codigo del usuario, configurando `matplotlib.use('agg')` (backend no-GUI necesario en WASM) antes de cualquier import del usuario. (2) El codigo del usuario se ejecuta normalmente. (3) `EPILOGUE_MATPLOTLIB` se inyecta despues, iterando todas las figuras abiertas (`plt.get_fignums()`), guardandolas como PNG a 150 DPI via `savefig` → `BytesIO` → `base64.b64encode`, e imprimiendolas con prefijo `__IMG_BASE64__:`. (4) `postProcesarImagenes()` post-procesa las salidas de Pyodide, convirtiendo entradas stdout con el marcador en entradas tipo `"imagen"` con data URL (`data:image/png;base64,...`). (5) `ConsolaResultados` renderiza entradas `"imagen"` como `<img src={dataURL}>` con `max-w-full rounded my-1` y max-height 400px. El tipo `EntradaConsola` en `tipos.ts` se extendio con `"imagen"` como tipo adicional. El post-procesamiento se aplica tanto en ejecuciones exitosas como en errores (el codigo pudo generar graficos antes de fallar). Variables Python internas usan prefijo `__` para evitar colisiones con el codigo del usuario.
+104. **Soporte matplotlib/graficos en consola de ejecucion** (`worker-pyodide.ts`, `ejecutor-codigo.ts`, `tipos.ts`, `panel-artefacto.tsx`): los graficos generados con matplotlib en codigo Python ahora se renderizan como imagenes PNG dentro de la consola de resultados del panel de artefactos. **Pipeline**: (1) `construirCodigoPython()` en el Worker envuelve el codigo del usuario en `try/except/finally`: el preamble configura `matplotlib.use('agg')` (backend no-GUI) antes de cualquier import del usuario. (2) El codigo del usuario indentado 4 espacios se ejecuta dentro del `try`. (3) Si lanza excepcion, el `except` la captura con `traceback.print_exc()` y marca `__excepcion_usuario__`. (4) El `finally` SIEMPRE itera figuras abiertas (`plt.get_fignums()`), guardandolas como PNG a 150 DPI via `savefig` → `BytesIO` → `base64.b64encode`, e imprimiendolas con prefijo `__IMG_BASE64__:`. Esto garantiza que figuras creadas antes de un error se capturen (antes se perdian silenciosamente). (5) `postProcesarImagenes()` en el hilo principal convierte entradas stdout con el marcador en entradas tipo `"imagen"` con data URL (`data:image/png;base64,...`). (6) `ConsolaResultados` renderiza entradas `"imagen"` como `<img src={dataURL}>` con `max-w-full rounded my-1` y max-height 400px. El tipo `EntradaConsola` en `tipos.ts` incluye `"imagen"` como tipo adicional. Variables Python internas usan prefijo `__` para evitar colisiones con el codigo del usuario.
 105. **Ejecucion per-bloque durante streaming** (`bloque-codigo.tsx`): el boton Ejecutar de bloques de codigo ahora esta siempre habilitado, incluso mientras el modelo sigue generando otros bloques. **Antes**: `ejecucionDeshabilitada = estaGenerandose` deshabilitaba TODOS los botones Ejecutar de todos los bloques mientras cualquier mensaje estaba en streaming. **Ahora**: se elimino `ejecucionDeshabilitada` completamente. react-markdown solo renderiza bloques de codigo cuando el fence de cierre (` ``` `) ya llego, por lo que cualquier bloque renderizado como componente siempre contiene codigo completo. No hay riesgo de ejecutar codigo parcial.
 106. **Ocultar boton Ejecutar con `input()`** (`bloque-codigo.tsx`, `panel-artefacto.tsx`): cuando `detectarUsoInput()` detecta que el codigo Python usa `input()`, el boton Ejecutar se oculta completamente tanto en bloques inline como en la cabecera del panel de artefactos. **Antes**: el boton se mostraba en color amber con tooltip de warning, lo que confundia al usuario porque podia intentar ejecutar de todos modos y recibir un error criptico. **Ahora**: `esEjecutable` incluye `!tieneInput` en su condicion, y toda la logica de estilos amber fue eliminada. Se elimino tambien la referencia a `tieneInput` en los estilos del boton ya que no aplica.
 107. **Resultados de tool call como markdown inline** (`contenedor-chat.tsx`): los resultados de ejecucion de tool calls ahora usan formato inteligente basado en longitud. Resultados cortos (1-3 lineas) se muestran como markdown inline ("**Resultado:** 42" o "**Resultado:** $x^2 + 1$") permitiendo que formulas LaTeX, formato y expresiones matematicas se rendericen correctamente. Resultados largos (4+ lineas) mantienen code fence para legibilidad. Errores siempre usan code fence. La deteccion usa `salidasTexto.split("\n").length > 3` para determinar el formato. Antes, todos los resultados usaban code fence indiscriminadamente.
 108. **Consola de ejecucion compacta** (`panel-artefacto.tsx`): se redujo el espacio vertical muerto en la consola de resultados del panel de artefactos. **Cambios**: `py-2` (16px vertical) → `py-1.5` (12px vertical), `leading-relaxed` (line-height 1.625) → `leading-snug` (line-height 1.375). Estos ajustes eliminan el exceso de espacio entre lineas de salida sin comprometer la legibilidad, especialmente notable cuando la consola muestra pocas lineas.
 109. **Resize dinamico de consola y panel de artefactos** (`panel-artefacto.tsx`, `contenedor-chat.tsx`): dos features de redimensionamiento por drag implementados. **(1) Consola vertical**: drag handle de 4px (`h-1`) en el borde superior de `ConsolaResultados`, ENCIMA de la barra de estado ("Completado"). Color `bg-[var(--color-claude-input-border)]`, sin indicadores visuales extra. Arrastrar hacia arriba agranda la consola, hacia abajo la reduce. Estado `alturaConsola` (px, default `null` = `max-h-64`). Min 60px, max 60% del panel. Usa refs para tracking sin re-renders. **(2) Panel horizontal**: drag handle de 6px (`w-1.5`) posicionado como overlay absoluto en el borde izquierdo interno del panel (solo `lg:+`). Al ser overlay, se superpone al borde `border-l` del panel sin crear un espacio en blanco adicional, de forma que el scrollbar del chat queda pegado literalmente a la orilla del panel. Arrastrar a la izquierda agranda el panel, a la derecha lo reduce. Estado `anchoPanelPx` en `ContenedorChat`. Min 350px, max 50% del `<main>` (via `mainRef`). Sin barras ni indicadores visuales adicionales — solo cambio de cursor (`ns-resize`/`ew-resize`) y color de fondo al hover. `document.body.style.cursor` y `userSelect = "none"` durante drag. El panel mantiene `flex flex-1 min-w-0` en su contenedor interno para prevenir desbordes de scroll.
+110. **Pyodide en Web Worker dedicado — fix "Beso de la Muerte"** (`lib/worker-pyodide.ts`, `lib/ejecutor-codigo.ts`): la ejecucion de Python via Pyodide WASM se movio del hilo principal a un **Web Worker dedicado** (`worker-pyodide.ts`). **Problema**: cuando el usuario ejecutaba `while True: pass`, Pyodide (WASM) bloqueaba el event loop de JavaScript completamente. `Promise.race` con timeout no funcionaba porque `setTimeout` nunca se ejecutaba — el event loop estaba congelado. La unica salida era forzar-cerrar la pestaña del navegador. **Solucion**: el Worker tiene su propio event loop aislado, por lo que: (1) el hilo principal (React) nunca se bloquea, manteniendo la UI responsive a 60 FPS incluso durante loops infinitos; (2) `setTimeout` en el hilo principal funciona correctamente porque no esta congelado por WASM; (3) si el Worker no responde en 10 segundos (`TIMEOUT_EJECUCION_MS`), se termina con `worker.terminate()` y se recrea lazy en la proxima ejecucion. El Worker se crea con `new Worker(new URL("./worker-pyodide.ts", import.meta.url))`, sintaxis soportada nativamente por Next.js 16 con Turbopack. `ejecutor-codigo.ts` se convierte en un **manager del Worker**: crea el Worker la primera vez (`obtenerWorker()`), le envia codigo via `postMessage`, recibe resultados (stdout/stderr/resultado) y lo termina si excede el timeout. **Opcion descartada**: `SharedArrayBuffer + setInterruptBuffer()` — requiere headers COOP/COEP que rompen integraciones con CDNs de terceros (Pyodide, KaTeX, etc.).
+111. **Mutex de ejecucion de Python — cola de promesas FIFO** (`lib/ejecutor-codigo.ts`): Pyodide (`runPythonAsync`) NO es reentrante — si dos ejecuciones corren simultaneamente, los callbacks de `setStdout`/`setStderr` se sobreescriben y los globals se corrompen. **Problema**: si el modelo ejecuta un tool call de Python y el usuario hace click en "Ejecutar" en otro bloque simultaneamente, se disparan dos `ejecutarCodigo()` contra el mismo Worker. **Solucion**: mutex basado en cola de promesas que serializa el acceso. Cada llamada a `ejecutarPython()` registra su turno (`miTurno`) y espera al anterior (`await turnoAnterior`). El `finally` siempre libera el turno, incluso en error o timeout. Flag `ejecucionEnCurso` consultable via `estaEjecutandoCodigo()` (exportado). Este es el **segundo nivel de defensa**: el primer nivel es el guard en `contexto-artefacto.tsx` (`if (estadoEjecucion === "ejecutando") return`) que previene clicks duplicados en la UI.
+112. **Matplotlib try/except/finally — captura garantizada de figuras** (`lib/worker-pyodide.ts`): `construirCodigoPython(codigoUsuario)` envuelve el codigo del usuario en una estructura `try/except/finally` que garantiza la captura de figuras matplotlib incluso cuando el codigo lanza una excepcion. **Problema anterior**: el EPILOGUE de matplotlib se concatenaba despues del codigo del usuario (`PREAMBLE + codigo + EPILOGUE`). Si el codigo lanzaba una excepcion (ej: `1/0` despues de `plt.plot()`), el EPILOGUE nunca se ejecutaba y las figuras se perdian silenciosamente. **Solucion**: (1) el preamble configura `matplotlib.use('agg')` antes que el usuario pueda importar matplotlib; (2) el codigo del usuario se indenta 4 espacios y se ejecuta dentro del `try` (lineas vacias se mantienen vacias); (3) el `except` captura la excepcion, imprime traceback via `print_exc()`, y marca `__excepcion_usuario__`; (4) el `finally` SIEMPRE itera figuras abiertas (`plt.get_fignums()`), las guarda como PNG a 150 DPI via `savefig` → `BytesIO` → `base64.b64encode`, las imprime con marcador `__IMG_BASE64__:`, y cierra todas las figuras. Post-ejecucion, el Worker verifica `pyodide.globals.get("__excepcion_usuario__")`: si es `null` → `exito: true`; si tiene valor → `exito: false` (el traceback ya fue impreso a stderr). Variables internas usan prefijo `__` para evitar colisiones con el codigo del usuario.
+113. **Estado Inteligente del Botón Ejecutar** (`renderizador-markdown.tsx`, `bloque-codigo.tsx`, `contexto-artefacto.tsx`): para evitar que el usuario intente ejecutar un bloque de código incompleto, el sistema desactiva el botón "Ejecutar" de ambos componentes (panel y chat) _únicamente_ para el bloque de código actualmente en streaming. Esto se logra leyendo el AST proveído por `react-markdown` combinándolo con el texto real del ContextoMensaje (`useMensaje`) con un offset (`node.position`). Esto localiza el fin del token en bruto y si contiene ` ``` ` significa que el bloque está cerrado y por lo tanto puede habilitar de nuevo los botones "Ejecutar".
+114. **Precarga Global de Pyodide** (`contenedor-chat.tsx`, `ejecutor-codigo.ts`): como los scripts WASM de python cargaban on demand (10s+) ocasionando una experiencia mala de primera ejecución, ahora Pyodide se instancia globalmente llamando a un Worker dummy (`precargarPyodide`) dos segundos después del TTI (Time To Interactive) de `ContenedorChat` para evitar saturación del Event Loop en el primer dibujado del framework NextJS, asegurando ejecuciones cuasi-instantáneas.
+115. **Visibilidad dinámica del botón menú lateral flotante** (`area-chat.tsx`): la barra superior flotante dividía su opacidad de manera unificada junto con el título. Ahora el botón para activar/desactivar la barra lateral (`PanelLeftOpen`) y el contenedor del título (`conversacion.titulo`) se encuentran desacoplados para que el botón de menú siga disponible permanentemente para abrir el panel en monitores grandes (`lg:`), aun cuando el panel de artefactos esté abierto ocultando el título por cuestión de espacio.
 
 ---
 

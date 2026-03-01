@@ -1,12 +1,13 @@
 "use client"
 
-import { memo } from "react"
+import { memo, useMemo } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 import type { Components } from "react-markdown"
 import { BloqueCodigoConResaltado } from "@/components/chat/bloque-codigo"
+import { useMensaje } from "@/lib/contexto-mensaje"
 
 interface PropiedadesRenderizador {
   contenido: string
@@ -54,11 +55,11 @@ const REGEX_BARE_SUB_SUPER = new RegExp(
   // Grupo 2: token matematico con subscript/superscript desnudo
   '(?<![A-Za-z0-9_\\\\$])' +                    // no precedido por word char, \, $
   '(' +
-    '[A-Za-z\\u0391-\\u03C9]' +                  // base: una sola letra (latina o griega)
-    '(?:' +
-      '[_^]' +                                    // operador sub/superscript
-      '(?:' + LLAVES + '|[A-Za-z0-9]{1,4})' +   // contenido con llaves O 1-4 chars desnudos
-    ')+' +                                        // una o mas parejas encadenadas
+  '[A-Za-z\\u0391-\\u03C9]' +                  // base: una sola letra (latina o griega)
+  '(?:' +
+  '[_^]' +                                    // operador sub/superscript
+  '(?:' + LLAVES + '|[A-Za-z0-9]{1,4})' +   // contenido con llaves O 1-4 chars desnudos
+  ')+' +                                        // una o mas parejas encadenadas
   ')' +
   '(?![A-Za-z0-9_{\\\\])',                       // no seguido por word char, {, \
   'g'
@@ -174,53 +175,20 @@ const opcionesKatex = {
 const pluginsRemark = [remarkMath, remarkGfm]
 const pluginsRehype = [[rehypeKatex, opcionesKatex]] as Parameters<typeof ReactMarkdown>[0]["rehypePlugins"]
 
-// Componentes personalizados para react-markdown
-const componentesMarkdown: Components = {
-  // Bloques de codigo e inline code
-  code({ children, className, node, ...resto }) {
-    const coincidenciaLenguaje = /language-([\w:.+-]+)/.exec(className || "")
-
-    // Si tiene clase de lenguaje, es un bloque de codigo (fenced)
-    if (coincidenciaLenguaje) {
-      return (
-        <BloqueCodigoConResaltado
-          codigo={String(children).replace(/\n$/, "")}
-          lenguaje={coincidenciaLenguaje[1]}
-          posicionOrigen={node?.position?.start?.offset}
-        />
-      )
-    }
-
-    // Codigo inline
-    return (
-      <code
-        className="bg-[#f3f4f6] text-[#1a1a1a] px-1.5 py-0.5 rounded text-[0.85em] font-mono font-medium"
-        {...resto}
-      >
-        {children}
-      </code>
-    )
-  },
-
+// Componentes personalizados base (fuera de renderizado para no recrear)
+const baseComponentes: Pick<Components, "pre" | "a" | "table"> = {
   // Pre: passthrough porque BloqueCodigoConResaltado maneja su propio contenedor
   pre({ children }) {
     return <>{children}</>
   },
-
   // Enlaces: abrir en nueva pestaña
   a({ children, href, ...resto }) {
     return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        {...resto}
-      >
+      <a href={href} target="_blank" rel="noopener noreferrer" {...resto}>
         {children}
       </a>
     )
   },
-
   // Tablas: con scroll horizontal para tablas anchas
   table({ children }) {
     return (
@@ -232,9 +200,55 @@ const componentesMarkdown: Components = {
 }
 
 export const RenderizadorMarkdown = memo(function RenderizadorMarkdown({ contenido }: PropiedadesRenderizador) {
+  const { estaGenerandose } = useMensaje()
+
   if (!contenido) return null
 
   const contenidoProcesado = preprocesarMatematicas(contenido)
+
+  // Memoizamos los componentes que dependen de props/estado (code) combinado con los base
+  const componentesMarkdown = useMemo<Components>(() => ({
+    ...baseComponentes,
+    code(props) {
+      const { children, className, node, ...resto } = props
+      const coincidenciaLenguaje = /language-([\w:.+-]+)/.exec(className || "")
+
+      // Si tiene clase de lenguaje, es un bloque de codigo (fenced)
+      if (coincidenciaLenguaje) {
+        let estaCerrado = true
+
+        // Determinar dinamicamente si el bloque ha terminado de ser emitido
+        // inspeccionando el texto crudo. El AST siempre asume que un bloque
+        // huerfano al final del stream se cierra automaticamente.
+        if (estaGenerandose && node?.position?.start?.offset !== undefined) {
+          const offset = node.position.start.offset
+          const textoDesdeElBloque = contenidoProcesado.slice(offset)
+          // Si el string residual luego de las primeras tildes contiene otras tildes (```), el bloque esta cerrado.
+          const textoPostApertura = textoDesdeElBloque.replace(/^```[\w:.+-]*\s*/, "")
+          estaCerrado = textoPostApertura.includes("```")
+        }
+
+        return (
+          <BloqueCodigoConResaltado
+            codigo={String(children).replace(/\n$/, "")}
+            lenguaje={coincidenciaLenguaje[1]}
+            posicionOrigen={node?.position?.start?.offset}
+            estaCerrado={estaCerrado}
+          />
+        )
+      }
+
+      // Codigo inline
+      return (
+        <code
+          className="bg-[#f3f4f6] text-[#1a1a1a] px-1.5 py-0.5 rounded text-[0.85em] font-mono font-medium"
+          {...resto}
+        >
+          {children}
+        </code>
+      )
+    }
+  }), [estaGenerandose, contenidoProcesado])
 
   return (
     <ReactMarkdown

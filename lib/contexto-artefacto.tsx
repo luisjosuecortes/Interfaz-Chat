@@ -17,7 +17,7 @@ interface ValorContextoArtefacto {
   /** Cierra el panel lateral */
   cerrarArtefacto: () => void
   /** Actualiza el contenido del artefacto activo (para sync en tiempo real durante streaming) */
-  actualizarContenidoArtefacto: (nuevoContenido: string, totalLineas: number) => void
+  actualizarContenidoArtefacto: (nuevoContenido: string, totalLineas: number, estaCerrado?: boolean) => void
   /** Guarda ediciones del usuario y marca el artefacto como editado */
   guardarEdicionUsuario: (nuevoContenido: string, totalLineas: number) => void
   /** Estado de ejecucion del artefacto activo */
@@ -93,10 +93,11 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
   /** Actualiza contenido del artefacto activo sin reemplazar el objeto completo.
    *  Usa setState funcional para evitar re-renders si el contenido no cambió.
    *  NO marca como editado — es para sync de streaming. */
-  const actualizarContenidoArtefacto = useCallback((nuevoContenido: string, totalLineas: number) => {
+  const actualizarContenidoArtefacto = useCallback((nuevoContenido: string, totalLineas: number, estaCerrado?: boolean) => {
     establecerArtefactoActivo(prev => {
-      if (!prev || prev.contenido === nuevoContenido) return prev
-      return { ...prev, contenido: nuevoContenido, totalLineas }
+      // Si el contenido y el estado de cierre son iguales, no redibujar
+      if (!prev || (prev.contenido === nuevoContenido && prev.estaCerrado === estaCerrado)) return prev
+      return { ...prev, contenido: nuevoContenido, totalLineas, estaCerrado }
     })
   }, [])
 
@@ -131,7 +132,7 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     } catch {
       establecerEstadoEjecucion("error")
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artefactoActivo?.contenido, artefactoActivo?.lenguaje, estadoEjecucion])
 
   /** Abre el artefacto en el panel y ejecuta su codigo en una operacion atomica.
@@ -179,8 +180,8 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     ejecutarArtefacto,
     abrirYEjecutarArtefacto,
   }), [artefactoActivo, editadoPorUsuario, estadoEjecucion, resultadoEjecucion,
-       abrirArtefacto, cerrarArtefacto, actualizarContenidoArtefacto,
-       guardarEdicionUsuario, ejecutarArtefacto, abrirYEjecutarArtefacto])
+    abrirArtefacto, cerrarArtefacto, actualizarContenidoArtefacto,
+    guardarEdicionUsuario, ejecutarArtefacto, abrirYEjecutarArtefacto])
 
   return (
     <ContextoArtefacto.Provider value={valorContexto}>

@@ -13,19 +13,26 @@ interface ValorContextoMensaje {
      * Falso en cuanto el modelo deja de generar tokens.
      */
     estaGenerandose: boolean
+    /**
+     * El texto completo y crudo del mensaje.
+     * Utilizado para inspeccionar el estado de los bloques de codigo durante el streaming.
+     */
+    contenidoMensaje: string
 }
 
 const ContextoMensaje = createContext<ValorContextoMensaje>({
     estaGenerandose: false,
+    contenidoMensaje: "",
 })
 
 interface PropiedadesProveedorMensaje {
     children: ReactNode
     estaGenerandose: boolean
+    contenidoMensaje: string
 }
 
-export function ProveedorMensaje({ children, estaGenerandose }: PropiedadesProveedorMensaje) {
-    const valor = useMemo(() => ({ estaGenerandose }), [estaGenerandose])
+export function ProveedorMensaje({ children, estaGenerandose, contenidoMensaje }: PropiedadesProveedorMensaje) {
+    const valor = useMemo(() => ({ estaGenerandose, contenidoMensaje }), [estaGenerandose, contenidoMensaje])
     return (
         <ContextoMensaje.Provider value={valor}>
             {children}

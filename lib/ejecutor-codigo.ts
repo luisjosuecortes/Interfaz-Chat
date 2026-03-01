@@ -1,6 +1,6 @@
 // Motor de ejecucion de codigo local en el navegador
 // JavaScript/TypeScript: iframe sandboxed aislado (nuevo por cada ejecucion)
-// Python: Pyodide WASM (singleton lazy, cacheado persistentemente via Cache API)
+// Python: Web Worker dedicado con Pyodide WASM (aislado del hilo principal)
 
 import type { ResultadoEjecucion, EntradaConsola } from "./tipos"
 
@@ -15,7 +15,7 @@ const LENGUAJES_EJECUTABLES: Set<string> = new Set([
 const TIMEOUT_EJECUCION_MS = 10_000
 
 /** Paquetes disponibles en Pyodide 0.27.5 (top-level import names).
- *  Se usa para pre-validar imports y dar errores claros en vez de ModuleNotFoundError criptico. */
+ *  Se usa para pre-validar imports en la UI (boton Ejecutar) y dar errores claros. */
 const PAQUETES_PYODIDE_DISPONIBLES: Set<string> = new Set([
   // Stdlib (siempre disponible)
   "json", "math", "statistics", "re", "datetime", "collections", "itertools",
@@ -36,50 +36,14 @@ const PAQUETES_PYODIDE_DISPONIBLES: Set<string> = new Set([
   "lxml", "parso", "jedi", "pygments",
 ])
 
-/** URL del CDN de Pyodide (version estable) */
-const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/"
-
-/** Nombre del cache persistente para Pyodide y paquetes */
-const NOMBRE_CACHE_PYODIDE = "pyodide-v0.27.5"
-
-/** Identificador de origen para filtrar postMessages del sandbox */
+/** Identificador de origen para filtrar postMessages del sandbox JS */
 const ORIGEN_SANDBOX = "__ejecutor_penguin__"
 
-/** Marcador especial para imágenes base64 capturadas por matplotlib.
+/** Marcador especial para imagenes base64 capturadas por matplotlib.
  *  Se usa como prefijo en stdout para identificar y convertir a entradas tipo "imagen". */
 const MARCADOR_IMAGEN_BASE64 = "__IMG_BASE64__:"
 
-/** Preamble Python: configura matplotlib con backend Agg (no-GUI) ANTES de cualquier import del usuario.
- *  Esto es necesario porque Pyodide corre en WASM sin servidor X11/display. */
-const PREAMBLE_MATPLOTLIB = `
-import sys as __sys__
-__tiene_matplotlib__ = False
-try:
-    import matplotlib
-    matplotlib.use('agg')
-    __tiene_matplotlib__ = True
-except ImportError:
-    pass
-`
-
-/** Epilogue Python: captura todas las figuras matplotlib abiertas como PNG base64.
- *  Imprime cada imagen con el marcador especial para post-procesamiento. */
-const EPILOGUE_MATPLOTLIB = `
-if __tiene_matplotlib__:
-    import matplotlib.pyplot as __plt__
-    import io as __io__
-    import base64 as __b64__
-    for __fig__ in __plt__.get_fignums():
-        __buf__ = __io__.BytesIO()
-        __plt__.figure(__fig__).savefig(__buf__, format='png', dpi=150, bbox_inches='tight', facecolor='white')
-        __buf__.seek(0)
-        __datos__ = __b64__.b64encode(__buf__.read()).decode('ascii')
-        print(f'__IMG_BASE64__:{__datos__}')
-        __buf__.close()
-    __plt__.close('all')
-`
-
-// === Utilidades ===
+// === Utilidades publicas ===
 
 /** Verifica si un lenguaje soporta ejecucion */
 export function esLenguajeEjecutable(lenguaje: string): boolean {
@@ -116,44 +80,6 @@ export function validarImportsPython(codigo: string): string[] {
  *  Busca llamadas a input( precedidas por espacio, inicio de linea, = u otro operador. */
 export function detectarUsoInput(codigo: string): boolean {
   return /(?:^|[\s=(,])input\s*\(/m.test(codigo)
-}
-
-// === Cache API para Pyodide ===
-
-/** Fetch con Cache API persistente.
- *  Estrategia cache-first: si el recurso esta en Cache API, retornar sin red.
- *  Cachea automaticamente WASM, JS, y paquetes Python (.whl) de Pyodide.
- *  La Cache API persiste entre sesiones (no se borra al cerrar el navegador). */
-async function fetchConCache(url: string, opciones?: RequestInit): Promise<Response> {
-  // Si Cache API no esta disponible (SSR, workers sin cache), usar fetch normal
-  if (typeof caches === "undefined") return fetch(url, opciones)
-
-  try {
-    const cache = await caches.open(NOMBRE_CACHE_PYODIDE)
-    const enCache = await cache.match(url)
-    if (enCache) return enCache
-
-    const respuesta = await fetch(url, opciones)
-    if (respuesta.ok) {
-      // Clonar porque el body solo se puede consumir una vez
-      await cache.put(url, respuesta.clone())
-    }
-    return respuesta
-  } catch {
-    // Si Cache API falla, intentar fetch normal
-    return fetch(url, opciones)
-  }
-}
-
-/** Solicita almacenamiento persistente para que el navegador no evicte el cache */
-async function solicitarAlmacenamientoPersistente() {
-  try {
-    if (navigator.storage?.persist) {
-      await navigator.storage.persist()
-    }
-  } catch {
-    // Ignorar si no esta disponible
-  }
 }
 
 // === Ejecutor JavaScript/TypeScript via iframe sandboxed ===
@@ -285,71 +211,99 @@ try {
   })
 }
 
-// === Pyodide: Singleton lazy con cache persistente ===
+// === Python: Web Worker dedicado con Pyodide ===
 
-/** Tipo minimo de la instancia Pyodide (evita dependencia de tipos completos) */
-interface InstanciaPyodide {
-  runPythonAsync: (codigo: string) => Promise<unknown>
-  setStdout: (opciones: { batched: (texto: string) => void }) => void
-  setStderr: (opciones: { batched: (texto: string) => void }) => void
-  loadPackagesFromImports: (codigo: string) => Promise<void>
-}
-
-let instanciaPyodide: InstanciaPyodide | null = null
-let promesaCargaPyodide: Promise<InstanciaPyodide> | null = null
+/** Estado del Worker de Pyodide en el hilo principal */
+let workerPyodide: Worker | null = null
+let promesaWorkerListo: Promise<Worker> | null = null
 let estadoPyodide: "inactivo" | "cargando" | "listo" | "error" = "inactivo"
+
+/** Mutex: cola de promesas para serializar ejecuciones de Python.
+ *  Pyodide (runPythonAsync) NO es reentrante: si dos ejecuciones corren simultaneamente,
+ *  los callbacks de stdout/stderr se sobreescriben y los globals se corrompen.
+ *  La cola garantiza que solo una ejecucion este activa a la vez (FIFO). */
+let colaEjecucion: Promise<void> = Promise.resolve()
+
+/** Flag para consultar si hay una ejecucion de Python en curso */
+let ejecucionEnCurso = false
 
 /** Obtiene el estado actual de Pyodide */
 export function obtenerEstadoPyodide(): "inactivo" | "cargando" | "listo" | "error" {
   return estadoPyodide
 }
 
-/** Carga Pyodide de forma lazy (solo al primer uso).
- *  Usa Cache API para persistir el WASM (~11MB) entre sesiones.
- *  Despues de la primera descarga, las siguientes cargas son instantaneas desde cache. */
-async function cargarPyodide(): Promise<InstanciaPyodide> {
-  if (instanciaPyodide) return instanciaPyodide
-  if (promesaCargaPyodide) return promesaCargaPyodide
-
-  estadoPyodide = "cargando"
-
-  // Solicitar almacenamiento persistente la primera vez
-  solicitarAlmacenamientoPersistente()
-
-  promesaCargaPyodide = (async () => {
-    try {
-      // Cargar script de Pyodide via import dinamico del CDN
-      const { loadPyodide } = await import(/* webpackIgnore: true */ `${PYODIDE_CDN}pyodide.mjs`)
-      const pyodide = await loadPyodide({
-        indexURL: PYODIDE_CDN,
-        // Usar Cache API para persistir WASM y paquetes entre sesiones
-        fetch: fetchConCache,
-      }) as InstanciaPyodide
-
-      // Deshabilitar input() y sys.stdin para evitar OSError: [Errno 29] I/O error.
-      // Pyodide corre en WASM sin stdin interactivo; esto da un error claro en vez de críptico.
-      await pyodide.runPythonAsync(`
-import builtins, sys, io
-sys.stdin = io.StringIO('')
-def _no_input(prompt=''):
-    raise EOFError('input() no disponible: el código se ejecuta en WebAssembly sin stdin interactivo.')
-builtins.input = _no_input
-`)
-
-      instanciaPyodide = pyodide
-      estadoPyodide = "listo"
-      return pyodide
-    } catch {
-      estadoPyodide = "error"
-      promesaCargaPyodide = null
-      throw new Error("No se pudo cargar Pyodide. Verifica tu conexion a internet.")
-    }
-  })()
-
-  return promesaCargaPyodide
+/** Indica si hay una ejecucion de Python activa (util para guards en la UI) */
+export function estaEjecutandoCodigo(): boolean {
+  return ejecucionEnCurso
 }
 
-/** Post-procesa salidas de Pyodide: convierte marcadores __IMG_BASE64__ en entradas tipo "imagen".
+/** Solicita almacenamiento persistente para que el navegador no evicte el cache de Pyodide */
+function solicitarAlmacenamientoPersistente() {
+  try {
+    if (navigator.storage?.persist) {
+      navigator.storage.persist().catch(() => { /* ignorar */ })
+    }
+  } catch {
+    // Ignorar si no esta disponible
+  }
+}
+
+/** Inicia la carga de Pyodide en segundo plano (para ejecutar cuando la app arranca).
+ *  Mejora radicalmente el tiempo de la primera ejecucion de Python. */
+export function precargarPyodide() {
+  if (estadoPyodide === "inactivo") {
+    obtenerWorker().catch(e => console.warn("Fallo precarga de Pyodide:", e))
+  }
+}
+
+/** Obtiene o crea el Worker de Pyodide.
+ *  La primera vez crea el Worker y espera a que Pyodide este listo.
+ *  Las siguientes llamadas retornan el Worker existente inmediatamente. */
+function obtenerWorker(): Promise<Worker> {
+  if (workerPyodide && estadoPyodide === "listo") return Promise.resolve(workerPyodide)
+  if (promesaWorkerListo) return promesaWorkerListo
+
+  estadoPyodide = "cargando"
+  solicitarAlmacenamientoPersistente()
+
+  promesaWorkerListo = new Promise<Worker>((resolve, reject) => {
+    const worker = new Worker(
+      new URL("./worker-pyodide.ts", import.meta.url),
+      { type: "module" }
+    )
+
+    function manejarEstado(e: MessageEvent) {
+      const datos = e.data
+      if (datos.tipo === "estado") {
+        if (datos.estado === "listo") {
+          workerPyodide = worker
+          estadoPyodide = "listo"
+          worker.removeEventListener("message", manejarEstado)
+          resolve(worker)
+        } else if (datos.estado === "error") {
+          estadoPyodide = "error"
+          promesaWorkerListo = null
+          worker.removeEventListener("message", manejarEstado)
+          reject(new Error("No se pudo cargar Pyodide. Verifica tu conexion a internet."))
+        }
+        // "cargando" es informativo, no necesitamos hacer nada
+      }
+    }
+
+    worker.addEventListener("message", manejarEstado)
+
+    // Si el Worker no puede cargar en absoluto (error de red, syntax error, etc.)
+    worker.onerror = () => {
+      estadoPyodide = "error"
+      promesaWorkerListo = null
+      reject(new Error("No se pudo iniciar el Worker de Python."))
+    }
+  })
+
+  return promesaWorkerListo
+}
+
+/** Post-procesa salidas del Worker: convierte marcadores __IMG_BASE64__ en entradas tipo "imagen".
  *  Esto permite que matplotlib/savefig capture graficos como data URLs renderizables. */
 function postProcesarImagenes(salidas: EntradaConsola[]): EntradaConsola[] {
   const salidasProcesadas: EntradaConsola[] = []
@@ -367,40 +321,26 @@ function postProcesarImagenes(salidas: EntradaConsola[]): EntradaConsola[] {
   return salidasProcesadas
 }
 
-/** Ejecuta Python via Pyodide (WASM).
- *  Captura stdout/stderr via setStdout/setStderr.
- *  Soporta imports de paquetes incluidos en Pyodide (numpy, etc).
- *  Paquetes se cachean automaticamente via Cache API.
- *  Timeout via Promise.race. */
+/** Ejecuta Python en un Web Worker dedicado con Pyodide.
+ *  El Worker tiene su propio event loop — loops infinitos (while True) no congelan la UI.
+ *  Timeout real: si el Worker no responde en 10s, se termina con worker.terminate()
+ *  y se recrea en la siguiente ejecucion.
+ *  Mutex via cola de promesas: solo una ejecucion activa a la vez (FIFO). */
 async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
   const salidas: EntradaConsola[] = []
   const inicio = performance.now()
 
+  // Mutex: registrar mi turno y esperar al anterior
+  let liberar: () => void
+  const miTurno = new Promise<void>(r => { liberar = r })
+  const turnoAnterior = colaEjecucion
+  colaEjecucion = miTurno
+  await turnoAnterior
+
+  ejecucionEnCurso = true
+
   try {
-    const pyodide = await cargarPyodide()
-
-    // Redirigir stdout/stderr a nuestro capturador
-    pyodide.setStdout({
-      batched: (texto: string) => {
-        salidas.push({
-          tipo: "stdout",
-          contenido: texto,
-          marcaTiempo: performance.now() - inicio,
-        })
-      },
-    })
-    pyodide.setStderr({
-      batched: (texto: string) => {
-        salidas.push({
-          tipo: "stderr",
-          contenido: texto,
-          marcaTiempo: performance.now() - inicio,
-        })
-      },
-    })
-
-    // Cargar paquetes que el codigo importa (numpy, pandas, etc.)
-    // Pre-validar imports contra paquetes disponibles para dar errores claros
+    // Pre-validar imports en el hilo principal (error rapido sin crear Worker)
     const importsNoDisponibles = validarImportsPython(codigo)
     if (importsNoDisponibles.length > 0) {
       salidas.push({
@@ -412,67 +352,97 @@ async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
       return { exito: false, salidas, duracionMs: performance.now() - inicio }
     }
 
-    // Los paquetes descargados se cachean via fetchConCache automaticamente
-    try {
-      await pyodide.loadPackagesFromImports(codigo)
-    } catch (errorPaquete) {
-      const msgPaquete = errorPaquete instanceof Error ? errorPaquete.message : String(errorPaquete)
-      salidas.push({
-        tipo: "error",
-        contenido: `Error cargando paquetes: ${msgPaquete}`,
-        marcaTiempo: performance.now() - inicio,
-      })
-      return { exito: false, salidas, duracionMs: performance.now() - inicio }
-    }
+    const worker = await obtenerWorker()
+    const idEjecucion = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
-    // Ejecutar con timeout via Promise.race
-    // Envolver codigo con preamble (matplotlib Agg) y epilogue (captura figuras como PNG base64)
-    const codigoConMatplotlib = PREAMBLE_MATPLOTLIB + "\n" + codigo + "\n" + EPILOGUE_MATPLOTLIB
-    const promesaEjecucion = pyodide.runPythonAsync(codigoConMatplotlib)
-    const promesaTimeout = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("__timeout__")), TIMEOUT_EJECUCION_MS)
+    return await new Promise<ResultadoEjecucion>((resolve) => {
+      let resuelto = false
+
+      // Timeout REAL: el hilo principal no esta bloqueado por WASM,
+      // asi que setTimeout funciona correctamente y puede terminar el Worker.
+      const temporizador = setTimeout(() => {
+        if (resuelto) return
+        resuelto = true
+        worker.removeEventListener("message", manejarMensaje)
+
+        // Terminar Worker que no responde (loop infinito, etc.)
+        worker.terminate()
+        workerPyodide = null
+        promesaWorkerListo = null
+        estadoPyodide = "inactivo"
+
+        salidas.push({
+          tipo: "error",
+          contenido: `Ejecucion interrumpida: excedio el limite de ${TIMEOUT_EJECUCION_MS / 1000}s`,
+          marcaTiempo: performance.now() - inicio,
+        })
+        resolve({
+          exito: false,
+          salidas: postProcesarImagenes(salidas),
+          duracionMs: performance.now() - inicio,
+          interrumpido: true,
+        })
+      }, TIMEOUT_EJECUCION_MS)
+
+      function manejarMensaje(e: MessageEvent) {
+        const datos = e.data
+        // Filtrar mensajes de otras ejecuciones (no deberia pasar con el mutex, pero por seguridad)
+        if (datos.id !== idEjecucion) return
+
+        if (datos.tipo === "stdout") {
+          salidas.push({
+            tipo: "stdout",
+            contenido: datos.texto,
+            marcaTiempo: performance.now() - inicio,
+          })
+        } else if (datos.tipo === "stderr") {
+          salidas.push({
+            tipo: "stderr",
+            contenido: datos.texto,
+            marcaTiempo: performance.now() - inicio,
+          })
+        } else if (datos.tipo === "resultado") {
+          if (resuelto) return
+          resuelto = true
+          clearTimeout(temporizador)
+          worker.removeEventListener("message", manejarMensaje)
+
+          // Si hubo error interno del Worker
+          if (datos.error) {
+            salidas.push({
+              tipo: "error",
+              contenido: datos.error,
+              marcaTiempo: performance.now() - inicio,
+            })
+          }
+
+          resolve({
+            exito: datos.exito ?? false,
+            salidas: postProcesarImagenes(salidas),
+            duracionMs: performance.now() - inicio,
+          })
+        }
+      }
+
+      worker.addEventListener("message", manejarMensaje)
+      worker.postMessage({ tipo: "ejecutar", id: idEjecucion, codigo })
     })
-
-    const resultado = await Promise.race([promesaEjecucion, promesaTimeout])
-
-    // Si hay valor de retorno (ultima expresion), mostrarlo
-    if (resultado !== undefined && resultado !== null) {
-      salidas.push({
-        tipo: "resultado",
-        contenido: String(resultado),
-        marcaTiempo: performance.now() - inicio,
-      })
-    }
-
-    // Post-procesar salidas: convertir marcadores __IMG_BASE64__ en entradas tipo "imagen"
-    const salidasProcesadas = postProcesarImagenes(salidas)
-
-    return {
-      exito: true,
-      salidas: salidasProcesadas,
-      duracionMs: performance.now() - inicio,
-    }
   } catch (error) {
+    // Error al obtener el Worker (carga fallida, etc.)
     const mensaje = error instanceof Error ? error.message : String(error)
-    const esTimeout = mensaje === "__timeout__"
-
     salidas.push({
       tipo: "error",
-      contenido: esTimeout
-        ? `Ejecucion interrumpida: excedio el limite de ${TIMEOUT_EJECUCION_MS / 1000}s`
-        : mensaje,
+      contenido: mensaje,
       marcaTiempo: performance.now() - inicio,
     })
-
-    // Post-procesar incluso en error: el codigo pudo generar graficos antes de fallar
-    const salidasProcesadas = postProcesarImagenes(salidas)
-
     return {
       exito: false,
-      salidas: salidasProcesadas,
+      salidas: postProcesarImagenes(salidas),
       duracionMs: performance.now() - inicio,
-      interrumpido: esTimeout,
     }
+  } finally {
+    ejecucionEnCurso = false
+    liberar!() // Siempre liberar mutex, incluso en error/timeout
   }
 }
 
@@ -480,7 +450,7 @@ async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
 
 /** Ejecuta codigo en el lenguaje especificado.
  *  JavaScript/TypeScript: iframe sandboxed (sincrono, seguro, sin descargas)
- *  Python: Pyodide WASM (primer uso descarga ~11MB, despues cacheado via Cache API) */
+ *  Python: Web Worker con Pyodide WASM (primer uso descarga ~11MB, despues cacheado via Cache API) */
 export async function ejecutarCodigo(
   codigo: string,
   lenguaje: string

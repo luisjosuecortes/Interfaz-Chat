@@ -438,6 +438,8 @@ interface PropiedadesBloqueCodigo {
   deshabilitarArtefacto?: boolean
   /** Offset del bloque en el markdown fuente (para ID unico entre bloques con prefijo identico) */
   posicionOrigen?: number
+  /** Indica si el bloque fue cerrado en el texto original (util para deshabilitar Ejecutar temporalmente) */
+  estaCerrado?: boolean
 }
 
 /** Estilo para el panel de artefactos (fondo delegado al contenedor, overflow delegado) */
@@ -460,7 +462,7 @@ const estiloCodigoInline = {
 
 // === Componente principal: bloque de código con resaltado ===
 
-export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefacto, posicionOrigen }: PropiedadesBloqueCodigo) {
+export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefacto, posicionOrigen, estaCerrado }: PropiedadesBloqueCodigo) {
   // === TODOS los hooks primero (antes de cualquier return condicional) ===
   // React requiere que los hooks se llamen en el mismo orden en cada render.
   // Si algun early return va antes de un hook, React crashea con
@@ -487,8 +489,9 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
       contenido: codigo,
       lenguaje,
       totalLineas,
+      estaCerrado: estaCerrado ?? true,
     })
-  }, [codigo, lenguaje, totalLineas, posicionOrigen, abrirYEjecutarArtefacto])
+  }, [codigo, lenguaje, totalLineas, posicionOrigen, abrirYEjecutarArtefacto, estaCerrado])
 
   // Generar ID solo una vez al montar el código. Mezcla posicion del bloque en el markdown
   // para que dos bloques con contenido identico pero en posiciones distintas tengan IDs diferentes.
@@ -510,18 +513,19 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
         contenido: codigo,
         lenguaje,
         totalLineas,
+        estaCerrado: estaCerrado ?? true,
       })
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estaGenerandose, esArtefactoValido])
 
   // Sync en tiempo real: si el panel muestra este artefacto y el código cambió (streaming), actualizar.
   // NO sincronizar si el usuario editó el artefacto manualmente (editadoPorUsuario = true).
   useEffect(() => {
-    if (artefactoActivo?.id === idArtefacto && artefactoActivo.contenido !== codigo && !editadoPorUsuario) {
-      actualizarContenidoArtefacto(codigo, totalLineas)
+    if (artefactoActivo?.id === idArtefacto && (artefactoActivo.contenido !== codigo || artefactoActivo.estaCerrado !== estaCerrado) && !editadoPorUsuario) {
+      actualizarContenidoArtefacto(codigo, totalLineas, estaCerrado ?? true)
     }
-  }, [codigo, totalLineas, artefactoActivo?.id, artefactoActivo?.contenido, idArtefacto, actualizarContenidoArtefacto, editadoPorUsuario])
+  }, [codigo, totalLineas, estaCerrado, artefactoActivo?.id, artefactoActivo?.contenido, artefactoActivo?.estaCerrado, idArtefacto, actualizarContenidoArtefacto, editadoPorUsuario])
 
   // === Early returns (todos los hooks ya fueron llamados) ===
 
@@ -587,6 +591,7 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
           contenido: codigo,
           lenguaje,
           totalLineas,
+          estaCerrado: estaCerrado ?? true,
         })}
       />
     )
@@ -604,11 +609,26 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefac
             <>
               <button
                 onClick={manejarEjecutarEnArtefacto}
-                className="flex items-center gap-1.5 text-xs transition-colors text-[var(--color-claude-texto-secundario)] hover:text-emerald-600"
-                title="Ejecutar codigo"
+                disabled={estaCerrado === false}
+                className={cn(
+                  "flex items-center gap-1.5 text-xs transition-colors",
+                  estaCerrado === false
+                    ? "text-[var(--color-claude-texto-secundario)] opacity-60 cursor-not-allowed"
+                    : "text-[var(--color-claude-texto-secundario)] hover:text-emerald-600"
+                )}
+                title={estaCerrado === false ? "Esperando a que termine de escribirse..." : "Ejecutar codigo"}
               >
-                <Play className="h-3.5 w-3.5" />
-                <span>Ejecutar</span>
+                {estaCerrado === false ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Escribiendo...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Ejecutar</span>
+                  </>
+                )}
               </button>
               <span className="text-[var(--color-claude-input-border)]">|</span>
             </>

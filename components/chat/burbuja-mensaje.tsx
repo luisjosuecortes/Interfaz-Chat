@@ -323,7 +323,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
               {mensaje.contenido}
             </div>
           ) : (
-            <ProveedorMensaje estaGenerandose={estaEscribiendoEste && estaGenerando}>
+            <ProveedorMensaje estaGenerandose={estaEscribiendoEste && estaGenerando} contenidoMensaje={mensaje.contenido}>
               {/* Contenido de texto */}
               {(mensaje.contenido || !estaSoloEsperando) && (
                 <div className="prosa-markdown break-words">

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import { useAlmacenChat, obtenerModeloSeleccionado } from "@/lib/almacen-chat"
 import { BarraLateral } from "@/components/chat/barra-lateral"
 import { AreaChat } from "@/components/chat/area-chat"
@@ -10,6 +10,7 @@ import { useArtefacto } from "@/lib/contexto-artefacto"
 import { enviarMensajeConStreaming, enviarContinuacionConStreaming } from "@/lib/cliente-chat"
 import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { generarId, cn } from "@/lib/utils"
+import { precargarPyodide } from "@/lib/ejecutor-codigo"
 import { countTokens } from "gpt-tokenizer/model/gpt-4o"
 import { obtenerModelo } from "@/lib/modelos"
 import { INSTRUCCIONES_SISTEMA } from "@/lib/constantes"
@@ -98,6 +99,15 @@ export function ContenedorChat() {
   const [mensajeError, establecerMensajeError] = useState<string | null>(null)
   const referenciaControlador = useRef<AbortController | null>(null)
   const { artefactoActivo, cerrarArtefacto, abrirYEjecutarArtefacto } = useArtefacto()
+
+  // --- Precarga de dependencias pesadas ---
+  useEffect(() => {
+    // Retrasar 2 segundos para no afectar el renderizado inicial y el Time To Interactive
+    const temporizador = setTimeout(() => {
+      precargarPyodide()
+    }, 2000)
+    return () => clearTimeout(temporizador)
+  }, [])
 
   // --- Resize horizontal del panel de artefactos ---
   const [anchoPanelPx, establecerAnchoPanelPx] = useState<number | null>(null)

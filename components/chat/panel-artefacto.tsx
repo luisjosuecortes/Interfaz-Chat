@@ -481,19 +481,24 @@ export function PanelArtefacto() {
           {esEjecutable && (
             <button
               onClick={ejecutarArtefacto}
-              disabled={estaEjecutando}
+              disabled={estaEjecutando || artefactoActivo.estaCerrado === false}
               className={cn(
                 "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors",
-                estaEjecutando
+                estaEjecutando || artefactoActivo.estaCerrado === false
                   ? "text-[var(--color-claude-texto-secundario)] opacity-60"
                   : "text-emerald-600 hover:text-emerald-700 hover:bg-[var(--color-claude-sidebar-hover)]"
               )}
-              title={estaEjecutando ? "Ejecutando..." : "Ejecutar código"}
+              title={estaEjecutando ? "Ejecutando..." : (artefactoActivo.estaCerrado === false ? "Esperando texto..." : "Ejecutar código")}
             >
               {estaEjecutando ? (
                 <>
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   <span className="hidden sm:inline">{estadoEjecucion === "cargando" ? "Cargando..." : "Ejecutando..."}</span>
+                </>
+              ) : artefactoActivo.estaCerrado === false ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span className="hidden sm:inline">Escribiendo...</span>
                 </>
               ) : (
                 <>

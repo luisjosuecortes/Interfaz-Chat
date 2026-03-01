@@ -143,6 +143,8 @@ export interface Artefacto {
   /** Resultado de ejecucion previo (para codigo ejecutado por el modelo).
    *  Permite restaurar la consola de resultados al abrir un artefacto ya ejecutado. */
   resultadoPrevio?: ResultadoEjecucion
+  /** Verdadero si el bloque de código cerró sus tildes durante el streaming. */
+  estaCerrado?: boolean
 }
 
 // === TIPOS EJECUCION DE CODIGO ===
