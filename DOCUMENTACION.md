@@ -61,6 +61,7 @@ chatslm/
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
 │   ├── cliente-chat.ts           # Cliente de streaming para la API (con soporte tool calling)
 │   ├── constantes.ts             # Constantes compartidas cliente/servidor (INSTRUCCIONES_SISTEMA, HERRAMIENTAS_CHAT)
+│   ├── constantes-python.ts      # Constantes y validadores compartidos entre ejecutor-codigo.ts y worker-pyodide.ts
 │   ├── contexto-artefacto.tsx    # React Context para artefactos + estado de ejecucion de codigo
 │   ├── ejecutor-codigo.ts        # Motor de ejecucion local: JS (iframe sandbox) + Python (Web Worker con Pyodide WASM)
 │   ├── worker-pyodide.ts         # Web Worker dedicado: Pyodide WASM, Cache API, try/finally matplotlib, protocolo postMessage
@@ -75,7 +76,7 @@ chatslm/
 │
 ├── .env.local                    # Variables de entorno (OPENAI_API_KEY)
 ├── components.json               # Configuracion de shadcn/ui
-├── next.config.ts                # Configuracion de Next.js (Turbopack + WASM aliases)
+├── next.config.ts                # Configuracion de Next.js (Turbopack + WASM aliases + headers COOP/COEP)
 ├── package.json                  # Dependencias y scripts
 └── tsconfig.json                 # Configuracion de TypeScript
 ```
@@ -189,7 +190,7 @@ El componente raiz de la aplicacion. Gestiona:
 - Edicion y reenvio de mensajes del usuario (`manejarEdicionMensaje`, `manejarReenvioMensaje`)
 - Regeneracion de respuestas del asistente (`manejarRegenerarRespuesta`)
 - Generacion automatica de titulos en el primer intercambio
-- Control de la generacion (detener streaming)
+- Control de la generacion (detener streaming + cancelar ejecucion de codigo activa via `detenerEjecucionActiva()`)
 - Streaming con throttle de 50ms para limitar re-renders
 - **Lectura directa del modelo** (`obtenerModeloSeleccionado()`): todas las funciones asincronas que envian mensajes al modelo (enviar, editar, reenviar, regenerar) leen el modelo seleccionado directamente del store al momento de ejecutar, en vez de capturarlo del closure de React. Esto evita que `React.memo` en `BurbujaMensaje` (que ignora cambios de callbacks para optimizar renders) provoque que se use un modelo desactualizado
 - **Layout split chat + artefacto**: cuando hay un artefacto activo, el area de chat se oculta en mobile y comparte el espacio en desktop (55% chat / 45% panel, max 700px). Usa `useArtefacto()` del contexto para reaccionar al estado del panel
@@ -600,6 +601,19 @@ Panel lateral que visualiza y edita artefactos (codigo, HTML, SVG, markdown, LaT
 └─────────────────────────────────────────────────┘
 ```
 
+**Botones de accion (cabecera):**
+
+| Boton | Icono | Condicion | Descripcion |
+|-------|-------|-----------|-------------|
+| Ejecutar | `Play` | Lenguaje ejecutable, no hay imports invalidos ni `input()`, no esta escribiendo | Ejecuta el codigo del artefacto via `ejecutarArtefacto()` del contexto |
+| Escribiendo... | `Loader2` (spin) | Artefacto abierto pero aun no cerrado (streaming en progreso) | Boton deshabilitado, indica que el bloque aun esta recibiendo texto |
+| Detener | `Square` (filled, rojo) | Ejecucion en curso (`cargando` o `ejecutando`) | Detiene la ejecucion activa via `detenerEjecucion()`. Reemplaza al boton Ejecutar durante la ejecucion |
+| Editar | `Pencil` | Siempre | Alterna modo edicion overlay (textarea transparente sobre codigo resaltado) |
+| Preview/Codigo | `Eye`/`Code2` | Tipos con vista previa (HTML, SVG, markdown, LaTeX), no en modo edicion | Alterna entre vista previa renderizada y codigo fuente |
+| Copiar | `Copy`/`Check` | Siempre | Copia contenido al portapapeles con feedback visual |
+| Descargar | `Download` | Siempre | Descarga como archivo con extension apropiada segun lenguaje |
+| Cerrar | `X` | Siempre | Cierra el panel de artefactos |
+
 **Modos de visualizacion (3):**
 
 | Modo | Activacion | Implementacion |
@@ -760,6 +774,7 @@ ProveedorArtefacto (page.tsx)
 | `resultadoEjecucion` | `ResultadoEjecucion \| null` | Resultado de la ultima ejecucion (salidas, exito, duracion) |
 | `ejecutarArtefacto` | `() => Promise<void>` | Ejecuta el codigo del artefacto activo usando `ejecutarCodigo()` del motor local. Lee contenido y lenguaje actuales (incluyendo ediciones). Determina estado inicial segun si Pyodide necesita cargarse |
 | `abrirYEjecutarArtefacto` | `(artefacto: Artefacto) => Promise<ResultadoEjecucion \| null>` | Operacion atomica: abre el artefacto en el panel Y ejecuta su codigo. Usa `refEjecucionExterna` para proteger contra interferencia del auto-open de `bloque-codigo.tsx`. Retorna el resultado de la ejecucion (o `null` si falla). Usado por `manejarToolCall` en `contenedor-chat.tsx` |
+| `detenerEjecucion` | `() => void` | Detiene la ejecucion de codigo activa via `detenerEjecucionActiva()`. Expuesto para el boton "Detener" del panel de artefactos |
 
 **Decisiones de diseno:**
 
@@ -783,9 +798,10 @@ Motor de ejecucion de codigo en el navegador. Arquitectura en dos capas:
 |-----------|-------|-------------|
 | `LENGUAJES_EJECUTABLES` | `javascript`, `js`, `typescript`, `ts`, `jsx`, `tsx`, `python`, `py` | Set de lenguajes soportados |
 | `TIMEOUT_EJECUCION_MS` | `30_000` (30s) | Tiempo maximo de ejecucion |
-| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes | Stdlib + cientificos disponibles en Pyodide 0.27.5 (duplicado del Worker para validacion en UI) |
+| `MARGEN_SIGINT_MS` | `5_000` (5s) | Margen antes del hard timeout para enviar SIGINT graceful |
 | `ORIGEN_SANDBOX` | `__ejecutor_penguin__` | Identificador para filtrar postMessages del iframe JS |
-| `MARCADOR_IMAGEN_BASE64` | `__IMG_BASE64__:` | Prefijo en stdout para identificar imagenes base64 capturadas por matplotlib |
+
+Las constantes `MARCADOR_IMAGEN_BASE64`, `PAQUETES_PYODIDE_DISPONIBLES`, `extraerImportsPython` y `validarImportsPython` se importan del modulo compartido `constantes-python.ts` (evita duplicacion con el Worker). `validarImportsPython` se re-exporta para consumidores existentes (`panel-artefacto.tsx`).
 
 **Funciones exportadas:**
 
@@ -794,9 +810,12 @@ Motor de ejecucion de codigo en el navegador. Arquitectura en dos capas:
 | `esLenguajeEjecutable(lenguaje)` | Verifica si un lenguaje soporta ejecucion |
 | `ejecutarCodigo(codigo, lenguaje, alIniciarEjecucion?)` | Ejecuta codigo y retorna `ResultadoEjecucion`. El callback opcional se invoca cuando el runtime esta listo (para Python: tras cargar Pyodide) |
 | `obtenerEstadoPyodide()` | Retorna estado actual de Pyodide (`inactivo` \| `cargando` \| `listo` \| `error`) |
-| `validarImportsPython(codigo)` | Retorna lista de imports no disponibles en Pyodide (vacia si todo OK) |
+| `validarImportsPython(codigo)` | Re-exportado de `constantes-python.ts`. Retorna lista de imports no disponibles en Pyodide (vacia si todo OK) |
 | `detectarUsoInput(codigo)` | Detecta si el codigo Python usa `input()` (no disponible en WASM) |
 | `estaEjecutandoCodigo()` | Indica si hay una ejecucion de Python en curso (para guards en la UI) |
+| `precargarPyodide()` | Inicia la carga de Pyodide en segundo plano (mejora primer tiempo de ejecucion) |
+| `tieneInterrupcionGraceful()` | Indica si SharedArrayBuffer esta disponible para SIGINT graceful |
+| `detenerEjecucionActiva()` | Detiene la ejecucion de Python activa. SIGINT graceful si SharedArrayBuffer disponible; hard terminate si no |
 
 **Ejecutor JavaScript (iframe sandboxed):**
 
@@ -817,10 +836,13 @@ El hilo principal no ejecuta Python directamente. Gestiona un Worker dedicado (`
 - **`ejecutarPython(codigo)`**: gestiona el ciclo completo de ejecucion:
   1. **Mutex** (cola de promesas FIFO): solo una ejecucion activa a la vez. Cada llamada registra su turno y espera al anterior
   2. **Pre-validacion de imports**: en el hilo principal para error rapido sin crear Worker
-  3. **Envia al Worker**: `{tipo: "ejecutar", id: idEjecucion, codigo}`
-  4. **Escucha mensajes**: acumula `stdout`/`stderr` en array de salidas, resuelve al recibir `resultado`
-  5. **Timeout real**: `setTimeout` en el hilo principal funciona correctamente porque WASM corre en el Worker, no aqui. Si el Worker no responde en 30s, `worker.terminate()` lo destruye y se recrea en la proxima ejecucion
-  6. **Post-procesamiento**: `postProcesarImagenes()` convierte marcadores `__IMG_BASE64__:` en entradas tipo `"imagen"` con data URL
+  3. **Limpieza del buffer de interrupcion**: `Atomics.store(bufferInterrupcion, 0, 0)` para evitar señales stale de ejecuciones anteriores
+  4. **Envia al Worker**: `{tipo: "ejecutar", id: idEjecucion, codigo}`
+  5. **Escucha mensajes**: acumula `stdout`/`stderr` en array de salidas, resuelve al recibir `resultado`
+  6. **Timeout 2-tier**: (a) **SIGINT graceful** 5s antes del hard timeout (`Atomics.store(bufferInterrupcion, 0, 2)`) — Pyodide verifica el buffer en cada bytecode boundary y lanza `KeyboardInterrupt`; (b) **Hard terminate** al cumplir 30s: `worker.terminate()` destruye el Worker y se recrea en la proxima ejecucion
+  7. **Cancelacion externa** (`cancelarEjecucionActual`): closure accesible via `detenerEjecucionActiva()`. Intenta SIGINT primero; si no responde en 3s, hard terminate como fallback
+  8. **Post-procesamiento**: `postProcesarImagenes()` convierte marcadores `__IMG_BASE64__:` en entradas tipo `"imagen"` con data URL
+- **SharedArrayBuffer para interrupcion graceful (`inicializarBufferInterrupcion`)**: al cargar el modulo, se intenta crear un `Int32Array(new SharedArrayBuffer(4))` si `crossOriginIsolated === true` (requiere headers COOP/COEP). El buffer se envia al Worker al conectar via `postMessage({tipo: "configurar_interrupcion", buffer})`. Al escribir `2` en index 0 (`Atomics.store`), Pyodide verifica el valor en su siguiente bytecode boundary (~cada 100 instrucciones Python) y lanza `KeyboardInterrupt`. Si `crossOriginIsolated` es `false`, la interrupcion graceful no esta disponible y se usa hard terminate directamente
 - **`solicitarAlmacenamientoPersistente()`**: se invoca al crear el Worker. `navigator.storage.persist()` solo funciona desde el hilo principal (no disponible en Workers para el dominio `storage.persist()`)
 - **Flag `ejecucionEnCurso`**: se activa dentro del mutex `try` y se desactiva en `finally`, consultable via `estaEjecutandoCodigo()`
 
@@ -845,6 +867,21 @@ async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
 
 Este es el **segundo nivel de defensa**: el primer nivel es el guard en `contexto-artefacto.tsx` (`if (estadoEjecucion === "ejecutando") return`) que previene clicks duplicados en la UI.
 
+### `constantes-python.ts` - Constantes y Validadores Compartidos
+
+Modulo compartido que contiene constantes y funciones de validacion usadas tanto por el hilo principal (`ejecutor-codigo.ts`) como por el Web Worker (`worker-pyodide.ts`). Webpack/Turbopack lo incluye automaticamente en el bundle de cada consumidor.
+
+**Exports:**
+
+| Export | Descripcion |
+|--------|-------------|
+| `MARCADOR_IMAGEN_BASE64` | `"__IMG_BASE64__:"` — Prefijo en stdout para identificar imagenes base64 de matplotlib |
+| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes (stdlib + cientificos) disponibles en Pyodide 0.27.5 |
+| `extraerImportsPython(codigo)` | Extrae nombres de top-level imports del codigo Python (`import`, `from`) |
+| `validarImportsPython(codigo)` | Valida que todos los imports esten disponibles en Pyodide. Retorna lista de no disponibles (vacia si OK) |
+
+Este modulo fue extraido para eliminar la duplicacion de ~60 lineas identicas que existian en `ejecutor-codigo.ts` y `worker-pyodide.ts`.
+
 ### `worker-pyodide.ts` - Web Worker de Python (Pyodide WASM)
 
 Web Worker dedicado que ejecuta Python via Pyodide en su propio hilo. Al correr en un Worker, el event loop del hilo principal (React) nunca se bloquea, incluso con loops infinitos (`while True: pass`). El Worker se puede terminar con `worker.terminate()` desde el manager si excede el timeout.
@@ -855,15 +892,17 @@ Web Worker dedicado que ejecuta Python via Pyodide en su propio hilo. Al correr 
 |-----------|-------|-------------|
 | `PYODIDE_CDN` | `https://cdn.jsdelivr.net/pyodide/v0.27.5/full/` | URL del CDN de Pyodide |
 | `NOMBRE_CACHE_PYODIDE` | `pyodide-v0.27.5` | Nombre del cache persistente |
-| `MARCADOR_IMAGEN_BASE64` | `__IMG_BASE64__:` | Prefijo para imagenes base64 de matplotlib |
-| `PAQUETES_PYODIDE_DISPONIBLES` | Set con ~90 paquetes | Duplicado para validacion dentro del Worker |
+
+Las constantes `MARCADOR_IMAGEN_BASE64` y `validarImportsPython` se importan del modulo compartido `constantes-python.ts` (eliminando la duplicacion anterior).
 
 **Singleton Pyodide:**
 
 Pyodide se carga lazy (primera ejecucion) y persiste como singleton dentro del Worker:
 - `loadPyodide()` con `fetch: fetchConCache` para cache persistente via Cache API
 - Despues de cargar, override de `input()` y `sys.stdin` para dar error claro
+- Aplica el buffer de interrupcion (`setInterruptBuffer`) si ya fue recibido del hilo principal
 - Reporta estado al hilo principal via `postMessage({tipo: "estado", estado: "listo"})`
+- La carga se inicia automaticamente al instanciar el Worker (precarga) para evitar deadlock donde el hilo principal espera "listo" para enviar "ejecutar"
 
 **Cache API persistente (`fetchConCache`):**
 
@@ -906,21 +945,26 @@ El codigo del usuario se indenta 4 espacios por linea (lineas vacias se mantiene
 
 **Handler principal (`self.onmessage`):**
 
-1. Carga Pyodide si no esta listo (`cargarPyodideEnWorker()`)
-2. Pre-valida imports contra `PAQUETES_PYODIDE_DISPONIBLES`
-3. Carga paquetes via `loadPackagesFromImports(codigo)` (numpy, pandas, etc.)
-4. Redirige stdout/stderr al hilo principal via `postMessage({tipo: "stdout"|"stderr", id, texto})`
-5. Ejecuta `construirCodigoPython(codigo)` via `runPythonAsync`
-6. Verifica `__excepcion_usuario__` y envia resultado al hilo principal
+Soporta dos tipos de mensaje:
+- **`configurar_interrupcion`**: recibe el `SharedArrayBuffer` del hilo principal y lo aplica a Pyodide via `setInterruptBuffer()` (si Pyodide ya cargo, aplica inmediatamente; si no, se aplica cuando termine de cargar)
+- **`ejecutar`**: ciclo completo de ejecucion:
+  1. Carga Pyodide si no esta listo (`cargarPyodideEnWorker()`)
+  2. Pre-valida imports contra `PAQUETES_PYODIDE_DISPONIBLES` (via `constantes-python.ts`)
+  3. Carga paquetes via `loadPackagesFromImports(codigo)` (numpy, pandas, etc.)
+  4. Redirige stdout/stderr al hilo principal via `postMessage({tipo: "stdout"|"stderr", id, texto})`
+  5. Ejecuta `construirCodigoPython(codigo)` via `runPythonAsync`
+  6. Verifica `__excepcion_usuario__` y envia resultado al hilo principal
+  7. Detecta `KeyboardInterrupt` en errores inesperados y reporta como interrupcion del usuario
 
 **Protocolo de mensajes Worker:**
 
 | Direccion | Tipo | Payload |
 |-----------|------|---------|
 | → Worker | `ejecutar` | `{ id, codigo }` |
+| → Worker | `configurar_interrupcion` | `{ buffer: Int32Array }` (SharedArrayBuffer) |
 | ← Main | `stdout` | `{ id, texto }` |
 | ← Main | `stderr` | `{ id, texto }` |
-| ← Main | `resultado` | `{ id, exito, error? }` |
+| ← Main | `resultado` | `{ id, exito, error?, interrumpido? }` |
 | ← Main | `estado` | `{ estado: "cargando" \| "listo" \| "error" }` |
 
 ---
@@ -1435,6 +1479,9 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 115. **Visibilidad dinámica del botón menú lateral flotante** (`area-chat.tsx`): la barra superior flotante dividía su opacidad de manera unificada junto con el título. Ahora el botón para activar/desactivar la barra lateral (`PanelLeftOpen`) y el contenedor del título (`conversacion.titulo`) se encuentran desacoplados para que el botón de menú siga disponible permanentemente para abrir el panel en monitores grandes (`lg:`), aun cuando el panel de artefactos esté abierto ocultando el título por cuestión de espacio.
 116. **Timeout de ejecucion aumentado a 30 segundos y preferencia por JavaScript** (`lib/ejecutor-codigo.ts`, `lib/constantes.ts`, `app/api/chat/route.ts`, `app/api/chat/continuar/route.ts`, `lib/contexto-artefacto.tsx`): **Problema**: el timeout de ejecucion de 10 segundos era insuficiente para la primera carga de Pyodide WASM (~11MB), causando que ejecuciones de Python fallaran con "Ejecucion interrumpida" antes de que Pyodide terminara de descargar. **Solucion en 4 partes**: (1) `TIMEOUT_EJECUCION_MS` aumentado de `10_000` a `30_000` — suficiente para la descarga inicial en conexiones lentas; (2) system prompt actualizado con preferencia agresiva por JavaScript (`SIEMPRE USA JAVASCRIPT por defecto`), explicando que JavaScript es instantaneo y Python requiere Pyodide WASM, con guias claras de cuando usar cada lenguaje; (3) descripcion de la herramienta `ejecutar_codigo` actualizada en ambas rutas API para reflejar el nuevo timeout y la preferencia por JavaScript; (4) callback `alIniciarEjecucion` agregado a `ejecutarCodigo()` y `ejecutarPython()` que se invoca cuando Pyodide termina de cargar y la ejecucion comienza, permitiendo a la UI transicionar en tiempo real de "Cargando Python..." a "Ejecutando..." (antes la UI permanecia en "Cargando" durante toda la ejecucion). **Eliminacion de duplicacion**: la definicion de herramientas (web_search + ejecutar_codigo) se extrajo a `HERRAMIENTAS_CHAT` en `lib/constantes.ts`, reemplazando las definiciones inline identicas en ambas rutas API. Ahora cambiar la herramienta solo requiere editar un archivo.
 117. **Fix validacion de tool calls y logging diagnostico** (`lib/cliente-chat.ts`, `components/chat/contenedor-chat.tsx`, `lib/contexto-artefacto.tsx`, `lib/ejecutor-codigo.ts`, `app/api/chat/route.ts`, `app/api/chat/continuar/route.ts`): **Problema**: tool calls del modelo podian fallar silenciosamente sin mostrar ningun feedback al usuario (ni el panel de artefactos ni errores en el chat). **Causas identificadas**: (1) en `cliente-chat.ts`, la validacion de campos del evento `tool_call` usaba checks de truthiness de JavaScript (`parseado.callId && parseado.idRespuesta`) que rechazaban strings vacias `""` como falsy — si la API enviaba un campo como string vacia, el tool call se descartaba silenciosamente y solo se llamaba `alFinalizar()`, dejando al usuario en un estado "escribiendo" sin explicacion; (2) en `contenedor-chat.tsx`, si `JSON.parse(argumentos)` fallaba en el catch de `manejarToolCall`, el error se "tragaba" porque intentaba reemplazar un indicador temporal (`` ```ejecutando:... ``) que nunca fue insertado — el regex `.replace()` no encontraba match, retornaba el string sin cambios, y el error se perdia por completo. **Solucion**: (1) validacion cambiada de truthiness (`&&`) a null checks (`!= null`) en ambas funciones de streaming (`enviarMensajeConStreaming` y `enviarContinuacionConStreaming`), aceptando strings vacias como validas; (2) flag `indicadorInsertado` en `manejarToolCall` que controla si el catch debe reemplazar el indicador temporal (regex) o agregar el error al final del texto (append); (3) logging diagnostico completo en toda la cadena de tool calls: `[api/chat]` y `[api/continuar]` en backend al emitir eventos function_call, `[cliente-chat]` al recibir eventos tool_call en el streaming SSE (con detalle de campos faltantes si la validacion falla), `[tool-call]` en `manejarToolCall` al recibir/ejecutar/completar tool calls (con lenguaje, profundidad, callId, exito, salidas, duracion), `[artefacto]` en `abrirYEjecutarArtefacto` (con estado inicial, estado Pyodide, resultado), y `[ejecutor]` en `ejecutarCodigo` (con lenguaje, familia, lineas de codigo). Esto permite diagnosticar la ruta exacta de fallo abriendo la consola del navegador y del servidor.
+118. **Interrupcion graceful de Python via SharedArrayBuffer** (`next.config.ts`, `lib/ejecutor-codigo.ts`, `lib/worker-pyodide.ts`): **Problema**: cuando una ejecucion de Python entraba en un loop largo o infinito, la unica opcion era esperar el hard timeout (30s) que destruia el Worker y obligaba a recargar Pyodide (~11MB) en la siguiente ejecucion. **Solucion**: interrupcion graceful 2-tier usando `SharedArrayBuffer` + `pyodide.setInterruptBuffer()`. (1) `next.config.ts` agrega headers `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: credentialless` para habilitar `crossOriginIsolated`. Se usa `credentialless` en vez de `require-corp` para no romper recursos cross-origin (CDN Pyodide, HuggingFace Hub); (2) `ejecutor-codigo.ts` crea un `Int32Array(new SharedArrayBuffer(4))` al cargar el modulo (solo si `crossOriginIsolated`), lo envia al Worker al conectar, y escribe `2` (SIGINT) via `Atomics.store` para solicitar interrupcion; (3) `worker-pyodide.ts` acepta el mensaje `configurar_interrupcion` y aplica el buffer a Pyodide via `setInterruptBuffer()`, que verifica el valor en cada bytecode boundary (~100 instrucciones Python) y lanza `KeyboardInterrupt`. **Timeout 2-tier**: 5s antes del hard timeout (25s), se envia SIGINT; si Python responde, el Worker se preserva (sin necesidad de recargar Pyodide). Si no responde (tight C extension loop), el hard timeout a los 30s destruye el Worker. Si `crossOriginIsolated` no esta disponible, se usa hard terminate directamente.
+119. **Boton Detener para ejecucion de codigo** (`lib/contexto-artefacto.tsx`, `components/chat/panel-artefacto.tsx`, `components/chat/contenedor-chat.tsx`): **Problema**: el usuario no tenia forma de cancelar una ejecucion de Python en progreso excepto esperar el timeout. **Solucion**: (1) `contexto-artefacto.tsx` expone `detenerEjecucion()` via React Context (delegando a `detenerEjecucionActiva()` del motor); (2) `panel-artefacto.tsx` muestra un boton rojo "Detener" con icono Square que reemplaza condicionalmente al boton "Ejecutar" cuando `estaEjecutando` es true; (3) `contenedor-chat.tsx` llama `detenerEjecucionActiva()` junto al `abort()` del streaming en `detenerGeneracion()`, cancelando tanto la generacion del modelo como la ejecucion de codigo en un solo click. La cancelacion usa el patron SIGINT graceful primero (preserva Worker) con fallback a hard terminate (3s).
+120. **Deduplicacion de constantes Python** (`lib/constantes-python.ts`, `lib/ejecutor-codigo.ts`, `lib/worker-pyodide.ts`): **Problema**: ~60 lineas de codigo identico (MARCADOR_IMAGEN_BASE64, PAQUETES_PYODIDE_DISPONIBLES, extraerImportsPython, validarImportsPython) estaban duplicadas entre el hilo principal y el Web Worker. **Solucion**: nuevo modulo compartido `constantes-python.ts` que se importa desde ambos consumidores. Webpack/Turbopack lo incluye automaticamente en cada bundle. `ejecutor-codigo.ts` re-exporta `validarImportsPython` para mantener la API publica existente (consumida por `panel-artefacto.tsx`).
 
 ---
 
@@ -1565,7 +1612,10 @@ BloqueCodigoConResaltado (renderizador-markdown → componentesMarkdown.code)
 | Archivo | Descripcion |
 |---------|-------------|
 | `lib/tipos.ts` | `TipoArtefacto` ("codigo" \| "html" \| "svg" \| "markdown") y `Artefacto` (id, tipo, titulo, contenido, lenguaje, totalLineas) |
-| `lib/contexto-artefacto.tsx` | React Context + `ProveedorArtefacto` + `useArtefacto()` hook |
+| `lib/contexto-artefacto.tsx` | React Context + `ProveedorArtefacto` + `useArtefacto()` hook (incluye `detenerEjecucion`) |
+| `lib/constantes-python.ts` | Constantes y validadores compartidos: `MARCADOR_IMAGEN_BASE64`, `PAQUETES_PYODIDE_DISPONIBLES`, `validarImportsPython` |
+| `lib/ejecutor-codigo.ts` | Motor de ejecucion: JS (iframe) + Python (Web Worker), mutex, SharedArrayBuffer SIGINT, `detenerEjecucionActiva()` |
+| `lib/worker-pyodide.ts` | Web Worker: Pyodide WASM, Cache API, try/finally matplotlib, `setInterruptBuffer` |
 | `components/chat/bloque-codigo.tsx` | Deteccion de artefactos + `TarjetaArtefacto` + `BloqueCodigoConResaltado` + `CodigoConResaltado` |
 | `components/chat/panel-artefacto.tsx` | Panel lateral completo con cabecera, acciones, codigo/preview |
 | `components/chat/contenedor-chat.tsx` | Layout split (chat + panel) condicionado a `artefactoActivo` |
@@ -1938,6 +1988,24 @@ pendiente → extrayendo → fragmentando → vectorizando → listo | error
    - Documentos con error (badge rojo con tooltip de error)
 
 ### Configuracion de Next.js para RAG (`next.config.ts`)
+
+**Headers COOP/COEP para SharedArrayBuffer:**
+
+```typescript
+headers: async () => [
+  {
+    source: "/(.*)",
+    headers: [
+      { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+      { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+    ],
+  },
+],
+```
+
+Estos headers habilitan `crossOriginIsolated`, necesario para que `SharedArrayBuffer` funcione. Se usa `credentialless` en vez de `require-corp` para no romper recursos cross-origin (CDN de Pyodide, HuggingFace Hub, fuentes de Google, etc.) que no envian header `Cross-Origin-Resource-Policy`. Con `crossOriginIsolated = true`, `ejecutor-codigo.ts` puede crear el buffer compartido para interrupcion graceful de Python (SIGINT via `Atomics.store`).
+
+**Aliases de build:**
 
 ```typescript
 // Excluir dependencias de Node.js que no se usan en el navegador

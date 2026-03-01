@@ -10,7 +10,7 @@ import { useArtefacto } from "@/lib/contexto-artefacto"
 import { enviarMensajeConStreaming, enviarContinuacionConStreaming } from "@/lib/cliente-chat"
 import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
 import { generarId, cn } from "@/lib/utils"
-import { precargarPyodide } from "@/lib/ejecutor-codigo"
+import { precargarPyodide, detenerEjecucionActiva } from "@/lib/ejecutor-codigo"
 import { countTokens } from "gpt-tokenizer/model/gpt-4o"
 import { obtenerModelo } from "@/lib/modelos"
 import { INSTRUCCIONES_SISTEMA } from "@/lib/constantes"
@@ -207,10 +207,11 @@ export function ContenedorChat() {
     }
   }
 
-  // Detener generacion en curso
+  // Detener generacion en curso (y ejecucion de codigo si hay un tool call activo)
   function detenerGeneracion() {
     referenciaControlador.current?.abort()
     referenciaControlador.current = null
+    detenerEjecucionActiva()
   }
 
   // Obtener ID de conversacion para RAG (real o temporal)

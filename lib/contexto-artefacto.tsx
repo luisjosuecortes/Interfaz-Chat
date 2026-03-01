@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useCallback, useRef, useMemo, type ReactNode } from "react"
 import type { Artefacto, ResultadoEjecucion, EstadoEjecucion } from "./tipos"
-import { ejecutarCodigo, esLenguajeEjecutable, obtenerEstadoPyodide } from "./ejecutor-codigo"
+import { ejecutarCodigo, esLenguajeEjecutable, obtenerEstadoPyodide, detenerEjecucionActiva } from "./ejecutor-codigo"
 
 // Valor que expone el contexto de artefactos a toda la aplicación
 interface ValorContextoArtefacto {
@@ -30,6 +30,8 @@ interface ValorContextoArtefacto {
    *  Evita el bug de reset de estado que ocurre al llamar abrirArtefacto + ejecutarArtefacto por separado.
    *  Retorna el resultado de la ejecucion (o null si falla). */
   abrirYEjecutarArtefacto: (artefacto: Artefacto) => Promise<ResultadoEjecucion | null>
+  /** Detiene la ejecucion de codigo en curso (SIGINT graceful o hard terminate) */
+  detenerEjecucion: () => void
 }
 
 const ContextoArtefacto = createContext<ValorContextoArtefacto>({
@@ -44,6 +46,7 @@ const ContextoArtefacto = createContext<ValorContextoArtefacto>({
   resultadoEjecucion: null,
   ejecutarArtefacto: async () => { },
   abrirYEjecutarArtefacto: async () => null,
+  detenerEjecucion: () => { },
 })
 
 /**
@@ -173,6 +176,12 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  /** Detiene la ejecucion de codigo en curso.
+   *  Delega a detenerEjecucionActiva del motor de ejecucion (SIGINT graceful → hard terminate). */
+  const detenerEjecucion = useCallback(() => {
+    detenerEjecucionActiva()
+  }, [])
+
   const valorContexto = useMemo(() => ({
     estaDisponible: true,
     artefactoActivo,
@@ -185,9 +194,10 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     resultadoEjecucion,
     ejecutarArtefacto,
     abrirYEjecutarArtefacto,
+    detenerEjecucion,
   }), [artefactoActivo, editadoPorUsuario, estadoEjecucion, resultadoEjecucion,
     abrirArtefacto, cerrarArtefacto, actualizarContenidoArtefacto,
-    guardarEdicionUsuario, ejecutarArtefacto, abrirYEjecutarArtefacto])
+    guardarEdicionUsuario, ejecutarArtefacto, abrirYEjecutarArtefacto, detenerEjecucion])
 
   return (
     <ContextoArtefacto.Provider value={valorContexto}>

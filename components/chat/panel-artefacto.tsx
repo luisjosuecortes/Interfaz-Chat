@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { X, Copy, Check, Download, Eye, Code2, Pencil, Play, Loader2, ChevronDown, ChevronUp } from "lucide-react"
+import { X, Copy, Check, Download, Eye, Code2, Pencil, Play, Square, Loader2, ChevronDown, ChevronUp } from "lucide-react"
 import { useArtefacto } from "@/lib/contexto-artefacto"
 import { useCopiarAlPortapapeles } from "@/lib/hooks"
 import { CodigoConResaltado, NOMBRES_LENGUAJE, EXTENSIONES_DESCARGA } from "./bloque-codigo"
@@ -368,7 +368,7 @@ function convertirLatexAMarkdown(latex: string): string {
  *  el codigo resaltado, manteniendo syntax highlighting mientras el usuario escribe. */
 export function PanelArtefacto() {
   // === Todos los hooks primero (antes de cualquier return condicional) ===
-  const { artefactoActivo, cerrarArtefacto, guardarEdicionUsuario, estadoEjecucion, resultadoEjecucion, ejecutarArtefacto } = useArtefacto()
+  const { artefactoActivo, cerrarArtefacto, guardarEdicionUsuario, estadoEjecucion, resultadoEjecucion, ejecutarArtefacto, detenerEjecucion } = useArtefacto()
   const { haCopiado, copiar } = useCopiarAlPortapapeles()
   const [modoVistaPrevia, establecerModoVistaPrevia] = useState(false)
   const [modoEdicion, establecerModoEdicion] = useState(false)
@@ -477,36 +477,42 @@ export function PanelArtefacto() {
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
-          {/* Botón Ejecutar (solo lenguajes ejecutables) */}
+          {/* Botón Ejecutar / Detener (solo lenguajes ejecutables) */}
           {esEjecutable && (
-            <button
-              onClick={ejecutarArtefacto}
-              disabled={estaEjecutando || artefactoActivo.estaCerrado === false}
-              className={cn(
-                "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors",
-                estaEjecutando || artefactoActivo.estaCerrado === false
-                  ? "text-[var(--color-claude-texto-secundario)] opacity-60"
-                  : "text-emerald-600 hover:text-emerald-700 hover:bg-[var(--color-claude-sidebar-hover)]"
-              )}
-              title={estaEjecutando ? "Ejecutando..." : (artefactoActivo.estaCerrado === false ? "Esperando texto..." : "Ejecutar código")}
-            >
-              {estaEjecutando ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span className="hidden sm:inline">{estadoEjecucion === "cargando" ? "Cargando..." : "Ejecutando..."}</span>
-                </>
-              ) : artefactoActivo.estaCerrado === false ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span className="hidden sm:inline">Escribiendo...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">Ejecutar</span>
-                </>
-              )}
-            </button>
+            estaEjecutando ? (
+              <button
+                onClick={detenerEjecucion}
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
+                title="Detener ejecucion"
+              >
+                <Square className="h-3.5 w-3.5 fill-current" />
+                <span className="hidden sm:inline">Detener</span>
+              </button>
+            ) : (
+              <button
+                onClick={ejecutarArtefacto}
+                disabled={artefactoActivo.estaCerrado === false}
+                className={cn(
+                  "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors",
+                  artefactoActivo.estaCerrado === false
+                    ? "text-[var(--color-claude-texto-secundario)] opacity-60"
+                    : "text-emerald-600 hover:text-emerald-700 hover:bg-[var(--color-claude-sidebar-hover)]"
+                )}
+                title={artefactoActivo.estaCerrado === false ? "Esperando texto..." : "Ejecutar código"}
+              >
+                {artefactoActivo.estaCerrado === false ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span className="hidden sm:inline">Escribiendo...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Ejecutar</span>
+                  </>
+                )}
+              </button>
+            )
           )}
 
           {/* Botón Editar */}

@@ -3,6 +3,10 @@
 // Python: Web Worker dedicado con Pyodide WASM (aislado del hilo principal)
 
 import type { ResultadoEjecucion, EntradaConsola } from "./tipos"
+import { MARCADOR_IMAGEN_BASE64, validarImportsPython } from "./constantes-python"
+
+// Re-exportar para consumidores existentes (panel-artefacto.tsx, etc.)
+export { validarImportsPython } from "./constantes-python"
 
 // === Constantes ===
 
@@ -14,34 +18,11 @@ const LENGUAJES_EJECUTABLES: Set<string> = new Set([
 /** Tiempo maximo de ejecucion antes de interrumpir (ms) */
 const TIMEOUT_EJECUCION_MS = 30_000
 
-/** Paquetes disponibles en Pyodide 0.27.5 (top-level import names).
- *  Se usa para pre-validar imports en la UI (boton Ejecutar) y dar errores claros. */
-const PAQUETES_PYODIDE_DISPONIBLES: Set<string> = new Set([
-  // Stdlib (siempre disponible)
-  "json", "math", "statistics", "re", "datetime", "collections", "itertools",
-  "functools", "operator", "string", "textwrap", "decimal", "fractions",
-  "random", "hashlib", "base64", "urllib", "html", "xml", "csv", "io",
-  "os", "sys", "copy", "pprint", "bisect", "heapq", "array", "struct",
-  "cmath", "typing", "abc", "enum", "dataclasses", "contextlib", "warnings",
-  "traceback", "inspect", "dis", "ast", "token", "tokenize", "numbers",
-  "time", "calendar", "zlib", "gzip", "bz2", "lzma", "zipfile", "tarfile",
-  "pathlib", "tempfile", "glob", "fnmatch", "shutil", "pickle", "shelve",
-  "sqlite3", "unicodedata", "locale", "codecs", "difflib",
-  "unittest", "doctest", "pdb", "logging", "argparse", "configparser",
-  "secrets", "hmac", "uuid", "socket", "builtins", "types",
-  // Paquetes cientificos de Pyodide
-  "numpy", "scipy", "pandas", "sympy", "sklearn", "micropip", "matplotlib",
-  "mpmath", "statsmodels", "pytz", "six", "packaging", "pyparsing",
-  "dateutil", "regex", "pyyaml", "yaml", "jsonschema",
-  "lxml", "parso", "jedi", "pygments",
-])
+/** Tiempo antes del hard timeout para intentar SIGINT graceful (ms) */
+const MARGEN_SIGINT_MS = 5_000
 
 /** Identificador de origen para filtrar postMessages del sandbox JS */
 const ORIGEN_SANDBOX = "__ejecutor_penguin__"
-
-/** Marcador especial para imagenes base64 capturadas por matplotlib.
- *  Se usa como prefijo en stdout para identificar y convertir a entradas tipo "imagen". */
-const MARCADOR_IMAGEN_BASE64 = "__IMG_BASE64__:"
 
 // === Utilidades publicas ===
 
@@ -55,25 +36,6 @@ function normalizarLenguaje(lenguaje: string): "javascript" | "python" {
   const l = lenguaje.toLowerCase()
   if (l === "python" || l === "py") return "python"
   return "javascript"
-}
-
-/** Extrae los nombres de top-level imports del codigo Python.
- *  Detecta `import foo`, `from foo import bar`, `import foo as bar`. */
-function extraerImportsPython(codigo: string): string[] {
-  const imports: string[] = []
-  const regex = /^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gm
-  let match
-  while ((match = regex.exec(codigo)) !== null) {
-    imports.push(match[1])
-  }
-  return [...new Set(imports)]
-}
-
-/** Valida que todos los imports del codigo Python esten disponibles en Pyodide.
- *  Retorna lista de paquetes no disponibles (vacia si todo OK). */
-export function validarImportsPython(codigo: string): string[] {
-  const imports = extraerImportsPython(codigo)
-  return imports.filter(pkg => !PAQUETES_PYODIDE_DISPONIBLES.has(pkg))
 }
 
 /** Detecta si el codigo Python usa input() (no disponible en WASM).
@@ -227,6 +189,22 @@ let colaEjecucion: Promise<void> = Promise.resolve()
 /** Flag para consultar si hay una ejecucion de Python en curso */
 let ejecucionEnCurso = false
 
+/** SharedArrayBuffer para interrupcion graceful de Pyodide (SIGINT → KeyboardInterrupt).
+ *  Solo disponible cuando crossOriginIsolated = true (requiere headers COOP/COEP).
+ *  Se crea una vez y se envia al Worker al conectar. Es un Int32Array(SharedArrayBuffer(4)):
+ *  escribir 2 en index 0 dispara KeyboardInterrupt en el siguiente bytecode boundary. */
+let bufferInterrupcion: Int32Array | null = null
+
+/** Funcion de cancelacion de la ejecucion activa (closure sobre el estado de la Promise).
+ *  Se establece al iniciar cada ejecucion y se limpia al finalizar.
+ *  Permite cancelar desde fuera (boton Detener, abort del streaming). */
+let cancelarEjecucionActual: (() => void) | null = null
+
+/** Indica si SharedArrayBuffer esta disponible (crossOriginIsolated) */
+export function tieneInterrupcionGraceful(): boolean {
+  return bufferInterrupcion !== null
+}
+
 /** Obtiene el estado actual de Pyodide */
 export function obtenerEstadoPyodide(): "inactivo" | "cargando" | "listo" | "error" {
   return estadoPyodide
@@ -256,6 +234,31 @@ export function precargarPyodide() {
   }
 }
 
+/** Detiene la ejecucion de Python activa.
+ *  Si SharedArrayBuffer esta disponible, envia SIGINT (graceful: preserva Worker + estado).
+ *  Si no, termina el Worker inmediatamente (hard: pierde estado de Pyodide).
+ *  Invocado por el boton "Detener" del panel y por el abort del streaming. */
+export function detenerEjecucionActiva(): void {
+  if (!ejecucionEnCurso || !cancelarEjecucionActual) return
+  cancelarEjecucionActual()
+  cancelarEjecucionActual = null
+}
+
+/** Inicializa el SharedArrayBuffer para interrupcion graceful.
+ *  Se llama una vez en el modulo. Requiere crossOriginIsolated (headers COOP/COEP). */
+function inicializarBufferInterrupcion() {
+  if (typeof globalThis.crossOriginIsolated !== "undefined" && globalThis.crossOriginIsolated) {
+    try {
+      bufferInterrupcion = new Int32Array(new SharedArrayBuffer(4))
+    } catch {
+      // SharedArrayBuffer no disponible (navegador antiguo, headers incorrectos)
+    }
+  }
+}
+
+// Inicializar buffer al cargar el modulo
+inicializarBufferInterrupcion()
+
 /** Obtiene o crea el Worker de Pyodide.
  *  La primera vez crea el Worker y espera a que Pyodide este listo.
  *  Las siguientes llamadas retornan el Worker existente inmediatamente. */
@@ -279,6 +282,10 @@ function obtenerWorker(): Promise<Worker> {
           workerPyodide = worker
           estadoPyodide = "listo"
           worker.removeEventListener("message", manejarEstado)
+          // Enviar buffer de interrupcion si esta disponible (SharedArrayBuffer)
+          if (bufferInterrupcion) {
+            worker.postMessage({ tipo: "configurar_interrupcion", buffer: bufferInterrupcion })
+          }
           resolve(worker)
         } else if (datos.estado === "error") {
           estadoPyodide = "error"
@@ -323,8 +330,8 @@ function postProcesarImagenes(salidas: EntradaConsola[]): EntradaConsola[] {
 
 /** Ejecuta Python en un Web Worker dedicado con Pyodide.
  *  El Worker tiene su propio event loop — loops infinitos (while True) no congelan la UI.
- *  Timeout real: si el Worker no responde en 30s, se termina con worker.terminate()
- *  y se recrea en la siguiente ejecucion.
+ *  Interrupcion 2-tier: SIGINT graceful 5s antes del hard timeout (preserva Worker si funciona).
+ *  Hard timeout: si el Worker no responde en 30s, se termina con worker.terminate().
  *  Mutex via cola de promesas: solo una ejecucion activa a la vez (FIFO).
  *  @param alIniciarEjecucion - callback invocado cuando Pyodide esta listo y la ejecucion comienza
  *    (permite a la UI transicionar de "cargando" a "ejecutando") */
@@ -357,20 +364,43 @@ async function ejecutarPython(codigo: string, alIniciarEjecucion?: () => void): 
     const worker = await obtenerWorker()
     const idEjecucion = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
+    // Limpiar buffer de interrupcion antes de ejecutar (evita señal stale de ejecucion anterior)
+    if (bufferInterrupcion) {
+      Atomics.store(bufferInterrupcion, 0, 0)
+    }
+
     // Pyodide esta listo: notificar a la UI para transicionar de "cargando" a "ejecutando"
     alIniciarEjecucion?.()
 
     return await new Promise<ResultadoEjecucion>((resolve) => {
       let resuelto = false
 
-      // Timeout REAL: el hilo principal no esta bloqueado por WASM,
-      // asi que setTimeout funciona correctamente y puede terminar el Worker.
-      const temporizador = setTimeout(() => {
+      /** Funcion auxiliar que resuelve la Promise y limpia todos los timers/listeners */
+      function resolverConLimpieza(resultado: ResultadoEjecucion) {
         if (resuelto) return
         resuelto = true
+        clearTimeout(temporizadorHard)
+        if (temporizadorSigint) clearTimeout(temporizadorSigint)
+        cancelarEjecucionActual = null
         worker.removeEventListener("message", manejarMensaje)
+        resolve(resultado)
+      }
 
-        // Terminar Worker que no responde (loop infinito, etc.)
+      // Tier 1 (graceful): 5s antes del hard timeout, enviar SIGINT via SharedArrayBuffer.
+      // Pyodide verifica el buffer en cada bytecode boundary de Python (~cada 100 instrucciones).
+      // Si funciona, Python lanza KeyboardInterrupt → Worker envia resultado → Promise resuelve.
+      // Si no funciona (tight C extension loop), el hard timeout los mata igualmente.
+      const temporizadorSigint = bufferInterrupcion
+        ? setTimeout(() => {
+          if (!resuelto && bufferInterrupcion) {
+            Atomics.store(bufferInterrupcion, 0, 2) // 2 = SIGINT
+          }
+        }, TIMEOUT_EJECUCION_MS - MARGEN_SIGINT_MS)
+        : null
+
+      // Tier 2 (hard): terminar Worker si no respondio al SIGINT (o si no hay SharedArrayBuffer)
+      const temporizadorHard = setTimeout(() => {
+        // Terminar Worker que no responde (loop infinito en C extension, etc.)
         worker.terminate()
         workerPyodide = null
         promesaWorkerListo = null
@@ -381,13 +411,60 @@ async function ejecutarPython(codigo: string, alIniciarEjecucion?: () => void): 
           contenido: `Ejecucion interrumpida: excedio el limite de ${TIMEOUT_EJECUCION_MS / 1000}s`,
           marcaTiempo: performance.now() - inicio,
         })
-        resolve({
+        resolverConLimpieza({
           exito: false,
           salidas: postProcesarImagenes(salidas),
           duracionMs: performance.now() - inicio,
           interrumpido: true,
         })
       }, TIMEOUT_EJECUCION_MS)
+
+      // Cancelacion externa (boton Detener del usuario, abort del streaming).
+      // Intenta SIGINT primero; si no hay SharedArrayBuffer, hard terminate.
+      cancelarEjecucionActual = () => {
+        if (resuelto) return
+        if (bufferInterrupcion) {
+          // Graceful: enviar SIGINT. El Worker respondera con KeyboardInterrupt.
+          // Si no responde en 3s, hard terminate como fallback.
+          Atomics.store(bufferInterrupcion, 0, 2)
+          setTimeout(() => {
+            if (!resuelto) {
+              worker.terminate()
+              workerPyodide = null
+              promesaWorkerListo = null
+              estadoPyodide = "inactivo"
+              salidas.push({
+                tipo: "error",
+                contenido: "Ejecucion interrumpida por el usuario",
+                marcaTiempo: performance.now() - inicio,
+              })
+              resolverConLimpieza({
+                exito: false,
+                salidas: postProcesarImagenes(salidas),
+                duracionMs: performance.now() - inicio,
+                interrumpido: true,
+              })
+            }
+          }, 3000)
+        } else {
+          // Sin SharedArrayBuffer: hard terminate inmediato
+          worker.terminate()
+          workerPyodide = null
+          promesaWorkerListo = null
+          estadoPyodide = "inactivo"
+          salidas.push({
+            tipo: "error",
+            contenido: "Ejecucion interrumpida por el usuario",
+            marcaTiempo: performance.now() - inicio,
+          })
+          resolverConLimpieza({
+            exito: false,
+            salidas: postProcesarImagenes(salidas),
+            duracionMs: performance.now() - inicio,
+            interrumpido: true,
+          })
+        }
+      }
 
       function manejarMensaje(e: MessageEvent) {
         const datos = e.data
@@ -407,11 +484,6 @@ async function ejecutarPython(codigo: string, alIniciarEjecucion?: () => void): 
             marcaTiempo: performance.now() - inicio,
           })
         } else if (datos.tipo === "resultado") {
-          if (resuelto) return
-          resuelto = true
-          clearTimeout(temporizador)
-          worker.removeEventListener("message", manejarMensaje)
-
           // Si hubo error interno del Worker
           if (datos.error) {
             salidas.push({
@@ -421,10 +493,11 @@ async function ejecutarPython(codigo: string, alIniciarEjecucion?: () => void): 
             })
           }
 
-          resolve({
+          resolverConLimpieza({
             exito: datos.exito ?? false,
             salidas: postProcesarImagenes(salidas),
             duracionMs: performance.now() - inicio,
+            interrumpido: datos.interrumpido ?? false,
           })
         }
       }
@@ -447,6 +520,7 @@ async function ejecutarPython(codigo: string, alIniciarEjecucion?: () => void): 
     }
   } finally {
     ejecucionEnCurso = false
+    cancelarEjecucionActual = null
     liberar!() // Siempre liberar mutex, incluso en error/timeout
   }
 }

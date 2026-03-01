@@ -2,6 +2,8 @@
 // Corre en su propio hilo para que bucles infinitos (while True) no congelen la UI.
 // Incluye: carga lazy con Cache API, try/except/finally para matplotlib, captura stdout/stderr.
 
+import { MARCADOR_IMAGEN_BASE64, validarImportsPython } from "./constantes-python"
+
 // === Tipos internos del Worker ===
 
 /** Interfaz minima de Pyodide (evita dependencia de tipos completos) */
@@ -11,42 +13,29 @@ interface InstanciaPyodide {
   setStderr: (opciones: { batched: (texto: string) => void }) => void
   loadPackagesFromImports: (codigo: string) => Promise<void>
   globals: { get: (nombre: string) => unknown }
+  /** Registra un buffer compartido para interrupcion via SIGINT (KeyboardInterrupt).
+   *  Pyodide verifica este buffer en cada boundary de bytecode de Python.
+   *  Escribir 2 en index 0 dispara KeyboardInterrupt en la siguiente verificacion. */
+  setInterruptBuffer: (buffer: Int32Array) => void
 }
 
 /** Mensaje entrante desde el hilo principal */
 interface MensajeEntrante {
-  tipo: "ejecutar"
-  id: string
-  codigo: string
+  tipo: "ejecutar" | "configurar_interrupcion"
+  id?: string
+  codigo?: string
+  /** Buffer compartido (SharedArrayBuffer) para interrupcion graceful */
+  buffer?: Int32Array
 }
+
+// Buffer de interrupcion: se recibe del hilo principal via postMessage.
+// Se aplica a Pyodide cuando este listo (puede llegar antes de que Pyodide cargue).
+let bufferInterrupcion: Int32Array | null = null
 
 // === Constantes ===
 
 const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/"
 const NOMBRE_CACHE_PYODIDE = "pyodide-v0.27.5"
-const MARCADOR_IMAGEN_BASE64 = "__IMG_BASE64__:"
-
-/** Paquetes disponibles en Pyodide 0.27.5 (top-level import names).
- *  Se usa para pre-validar imports y dar errores claros. */
-const PAQUETES_PYODIDE_DISPONIBLES: Set<string> = new Set([
-  // Stdlib
-  "json", "math", "statistics", "re", "datetime", "collections", "itertools",
-  "functools", "operator", "string", "textwrap", "decimal", "fractions",
-  "random", "hashlib", "base64", "urllib", "html", "xml", "csv", "io",
-  "os", "sys", "copy", "pprint", "bisect", "heapq", "array", "struct",
-  "cmath", "typing", "abc", "enum", "dataclasses", "contextlib", "warnings",
-  "traceback", "inspect", "dis", "ast", "token", "tokenize", "numbers",
-  "time", "calendar", "zlib", "gzip", "bz2", "lzma", "zipfile", "tarfile",
-  "pathlib", "tempfile", "glob", "fnmatch", "shutil", "pickle", "shelve",
-  "sqlite3", "unicodedata", "locale", "codecs", "difflib",
-  "unittest", "doctest", "pdb", "logging", "argparse", "configparser",
-  "secrets", "hmac", "uuid", "socket", "builtins", "types",
-  // Paquetes cientificos de Pyodide
-  "numpy", "scipy", "pandas", "sympy", "sklearn", "micropip", "matplotlib",
-  "mpmath", "statsmodels", "pytz", "six", "packaging", "pyparsing",
-  "dateutil", "regex", "pyyaml", "yaml", "jsonschema",
-  "lxml", "parso", "jedi", "pygments",
-])
 
 // === Cache API para Pyodide ===
 
@@ -99,6 +88,10 @@ builtins.input = _no_input
 `)
 
       instanciaPyodide = pyodide
+      // Aplicar buffer de interrupcion si ya fue recibido del hilo principal
+      if (bufferInterrupcion) {
+        pyodide.setInterruptBuffer(bufferInterrupcion)
+      }
       self.postMessage({ tipo: "estado", estado: "listo" })
       return pyodide
     } catch (error) {
@@ -184,25 +177,6 @@ finally:
 `
 }
 
-// === Validacion de imports ===
-
-/** Extrae top-level imports del codigo Python */
-function extraerImportsPython(codigo: string): string[] {
-  const imports: string[] = []
-  const regex = /^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gm
-  let match
-  while ((match = regex.exec(codigo)) !== null) {
-    imports.push(match[1])
-  }
-  return [...new Set(imports)]
-}
-
-/** Valida que todos los imports esten disponibles en Pyodide */
-function validarImportsPython(codigo: string): string[] {
-  const imports = extraerImportsPython(codigo)
-  return imports.filter(pkg => !PAQUETES_PYODIDE_DISPONIBLES.has(pkg))
-}
-
 // === Handler principal del Worker ===
 
 // Empezar a cargar Pyodide inmediatamente al instanciar el Worker
@@ -213,9 +187,21 @@ cargarPyodideEnWorker().catch(err => {
 })
 
 self.onmessage = async (evento: MessageEvent<MensajeEntrante>) => {
-  const { tipo, id, codigo } = evento.data
+  const { tipo } = evento.data
+
+  // Configurar buffer de interrupcion (SharedArrayBuffer del hilo principal)
+  if (tipo === "configurar_interrupcion") {
+    bufferInterrupcion = evento.data.buffer ?? null
+    // Si Pyodide ya esta cargado, aplicar inmediatamente
+    if (instanciaPyodide && bufferInterrupcion) {
+      instanciaPyodide.setInterruptBuffer(bufferInterrupcion)
+    }
+    return
+  }
 
   if (tipo !== "ejecutar") return
+  const { id, codigo } = evento.data
+  if (!id || !codigo) return
 
   try {
     // 1. Cargar Pyodide si no esta listo
@@ -277,11 +263,14 @@ self.onmessage = async (evento: MessageEvent<MensajeEntrante>) => {
   } catch (error) {
     // Error inesperado (carga de Pyodide, error interno, etc.)
     const mensaje = error instanceof Error ? error.message : String(error)
+    // Detectar KeyboardInterrupt (interrupcion graceful via SharedArrayBuffer)
+    const esInterrupcion = mensaje.includes("KeyboardInterrupt")
     self.postMessage({
       tipo: "resultado",
       id,
       exito: false,
-      error: mensaje,
+      error: esInterrupcion ? "Ejecucion interrumpida por el usuario" : mensaje,
+      interrumpido: esInterrupcion,
     })
   }
 }
