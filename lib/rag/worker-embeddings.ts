@@ -487,8 +487,10 @@ async function procesarArchivo(id: number, archivo: ArrayBuffer, nombre: string,
       doc.numPages * CHARS_POR_PAGINA_ESTIMADO / (tamanoFragmento - solapamiento)
     ))
   } else {
+    // Estimar con longitud en caracteres (no bytes) para consistencia con tamanoFragmento
+    const longitudTexto = new TextDecoder("utf-8").decode(archivo).length
     fragmentosEstimados = Math.max(1, Math.ceil(
-      archivo.byteLength / (tamanoFragmento - solapamiento)
+      longitudTexto / (tamanoFragmento - solapamiento)
     ))
   }
 

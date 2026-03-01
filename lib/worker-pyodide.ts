@@ -116,13 +116,20 @@ builtins.input = _no_input
 /** Construye el codigo Python envuelto en try/except/finally para:
  *  1. Capturar excepciones del usuario sin perder figuras matplotlib
  *  2. Garantizar que el epilogue de matplotlib SIEMPRE se ejecute (incluso con error)
- *  3. Reportar la excepcion via traceback.print_exc() */
+ *  3. Reportar la excepcion via traceback.print_exc()
+ *  4. Auto-display de la ultima expresion (como REPL/Jupyter) si el usuario no uso print() */
 function construirCodigoPython(codigoUsuario: string): string {
   // Indentar cada linea del codigo del usuario con 4 espacios
   const codigoIndentado = codigoUsuario
     .split("\n")
     .map(linea => linea.length === 0 ? "" : "    " + linea)
     .join("\n")
+
+  // Hex-encode del source original para auto-display via ast (sin problemas de escaping)
+  const hexCodigo = Array.from(
+    new TextEncoder().encode(codigoUsuario),
+    b => b.toString(16).padStart(2, "0"),
+  ).join("")
 
   return `
 import sys as __sys__
@@ -137,11 +144,31 @@ except ImportError:
 __excepcion_usuario__ = None
 try:
 ${codigoIndentado}
+    # Auto-display: si la ultima sentencia es una expresion desnuda (como REPL/Jupyter),
+    # evaluar y mostrar su valor. Esto permite que codigo sin print() produzca output.
+    try:
+        import ast as __ast__
+        __src__ = bytes.fromhex('${hexCodigo}').decode()
+        __tree__ = __ast__.parse(__src__)
+        if __tree__.body and isinstance(__tree__.body[-1], __ast__.Expr):
+            __last__ = __tree__.body[-1]
+            # No auto-display si ya es una llamada a print/pprint/display
+            __skip__ = (isinstance(__last__.value, __ast__.Call) and
+                        isinstance(getattr(__last__.value, 'func', None), __ast__.Name) and
+                        getattr(__last__.value.func, 'id', '') in ('print', 'pprint', 'display'))
+            if not __skip__:
+                __auto_val__ = eval(compile(__ast__.Expression(body=__last__.value), '<auto>', 'eval'))
+                if __auto_val__ is not None:
+                    print(repr(__auto_val__))
+    except:
+        pass
 except Exception as __e__:
     __excepcion_usuario__ = __e__
     import traceback as __tb__
     __tb__.print_exc()
 finally:
+    __sys__.stdout.flush()
+    __sys__.stderr.flush()
     if __tiene_matplotlib__:
         import matplotlib.pyplot as __plt__
         import io as __io__

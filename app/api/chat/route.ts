@@ -1,7 +1,7 @@
 import OpenAI from "openai"
 import { NextResponse } from "next/server"
 import { obtenerModelo } from "@/lib/modelos"
-import { INSTRUCCIONES_SISTEMA } from "@/lib/constantes"
+import { INSTRUCCIONES_SISTEMA, HERRAMIENTAS_CHAT } from "@/lib/constantes"
 
 // TODO: Cuando se añadan más proveedores (Anthropic, Google, etc.),
 // usar obtenerProveedorDeModelo() para enrutar al cliente correcto.
@@ -105,27 +105,7 @@ export async function POST(solicitud: Request) {
       input: entradaMensajes,
       stream: true,
       max_output_tokens: maxTokensSalida,
-      tools: [
-        {
-          type: "web_search" as const,
-          search_context_size: "medium" as const,
-        },
-        {
-          type: "function" as const,
-          name: "ejecutar_codigo",
-          description: "Ejecuta codigo Python o JavaScript en el navegador del usuario y retorna la salida. Usa esto para verificar calculos, probar logica, analizar datos o generar resultados. El codigo se ejecuta localmente via Pyodide (Python) o iframe sandboxed (JavaScript). Timeout: 10 segundos.",
-          parameters: {
-            type: "object" as const,
-            properties: {
-              lenguaje: { type: "string" as const, enum: ["python", "javascript"], description: "Lenguaje del codigo a ejecutar" },
-              codigo: { type: "string" as const, description: "El codigo fuente a ejecutar" },
-            },
-            required: ["lenguaje", "codigo"],
-            additionalProperties: false,
-          },
-          strict: true,
-        },
-      ],
+      tools: [...HERRAMIENTAS_CHAT],
       include: ["web_search_call.action.sources"],
       ...(soportaReasoning && {
         reasoning: {

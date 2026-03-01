@@ -126,7 +126,10 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     establecerResultadoEjecucion(null)
 
     try {
-      const resultado = await ejecutarCodigo(artefacto.contenido, artefacto.lenguaje)
+      const resultado = await ejecutarCodigo(artefacto.contenido, artefacto.lenguaje, () => {
+        // Pyodide cargado: transicionar UI de "Cargando Python..." a "Ejecutando..."
+        establecerEstadoEjecucion("ejecutando")
+      })
       establecerResultadoEjecucion(resultado)
       establecerEstadoEjecucion(resultado.exito ? "completado" : "error")
     } catch {
@@ -155,7 +158,10 @@ export function ProveedorArtefacto({ children }: { children: ReactNode }) {
     establecerResultadoEjecucion(null)
 
     try {
-      const resultado = await ejecutarCodigo(artefacto.contenido, artefacto.lenguaje)
+      const resultado = await ejecutarCodigo(artefacto.contenido, artefacto.lenguaje, () => {
+        // Pyodide cargado: transicionar UI de "Cargando Python..." a "Ejecutando..."
+        establecerEstadoEjecucion("ejecutando")
+      })
       establecerResultadoEjecucion(resultado)
       establecerEstadoEjecucion(resultado.exito ? "completado" : "error")
       return resultado

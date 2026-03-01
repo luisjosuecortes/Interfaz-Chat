@@ -1,6 +1,6 @@
 import OpenAI from "openai"
 import { NextResponse } from "next/server"
-import { INSTRUCCIONES_SISTEMA } from "@/lib/constantes"
+import { INSTRUCCIONES_SISTEMA, HERRAMIENTAS_CHAT } from "@/lib/constantes"
 import { obtenerModelo } from "@/lib/modelos"
 
 // Endpoint para enviar resultado de tool call y continuar la respuesta del modelo.
@@ -53,27 +53,7 @@ export async function POST(solicitud: Request) {
       }],
       stream: true,
       max_output_tokens: maxTokensSalida,
-      tools: [
-        {
-          type: "web_search" as const,
-          search_context_size: "medium" as const,
-        },
-        {
-          type: "function" as const,
-          name: "ejecutar_codigo",
-          description: "Ejecuta codigo Python o JavaScript en el navegador del usuario y retorna la salida. Usa esto para verificar calculos, probar logica, analizar datos o generar resultados. El codigo se ejecuta localmente via Pyodide (Python) o iframe sandboxed (JavaScript). Timeout: 10 segundos.",
-          parameters: {
-            type: "object" as const,
-            properties: {
-              lenguaje: { type: "string" as const, enum: ["python", "javascript"], description: "Lenguaje del codigo a ejecutar" },
-              codigo: { type: "string" as const, description: "El codigo fuente a ejecutar" },
-            },
-            required: ["lenguaje", "codigo"],
-            additionalProperties: false,
-          },
-          strict: true,
-        },
-      ],
+      tools: [...HERRAMIENTAS_CHAT],
       ...(soportaReasoning && {
         reasoning: {
           effort: "medium" as const,

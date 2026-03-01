@@ -136,8 +136,13 @@ export async function enviarMensajeConStreaming({
                 break
 
               // Tool calling (function calling del modelo)
-              case "tool_call":
-                if (parseado.nombre && parseado.argumentos && parseado.callId && parseado.idRespuesta) {
+              case "tool_call": {
+                // Usar != null para aceptar strings vacias como validas (solo rechazar null/undefined)
+                const tieneNombre = parseado.nombre != null
+                const tieneArgs = parseado.argumentos != null
+                const tieneCallId = parseado.callId != null
+                const tieneIdResp = parseado.idRespuesta != null
+                if (tieneNombre && tieneArgs && tieneCallId && tieneIdResp) {
                   // await: toda la cadena de tool calls (ejecucion + continuacion + encadenamientos)
                   // corre DENTRO de este contexto. Si falla, propaga al catch externo que llama alFinalizar.
                   await alToolCall?.(
@@ -147,11 +152,10 @@ export async function enviarMensajeConStreaming({
                     parseado.idRespuesta as string,
                   )
                 } else {
-                  console.warn("[cliente-chat] Tool call con campos faltantes:", parseado)
-                  // Limpiar estado: sin campos validos no se puede ejecutar el tool call
                   alFinalizar()
                 }
                 return
+              }
             }
           } catch {
             // Ignorar lineas que no son JSON valido
@@ -272,7 +276,12 @@ export async function enviarContinuacionConStreaming({
             }
 
             if (parseado.tipo === "tool_call") {
-              if (parseado.nombre && parseado.argumentos && parseado.callId && parseado.idRespuesta) {
+              // Usar != null para aceptar strings vacias como validas (solo rechazar null/undefined)
+              const tieneNombre = parseado.nombre != null
+              const tieneArgs = parseado.argumentos != null
+              const tieneCallId = parseado.callId != null
+              const tieneIdResp = parseado.idRespuesta != null
+              if (tieneNombre && tieneArgs && tieneCallId && tieneIdResp) {
                 await alToolCall?.(
                   parseado.nombre as string,
                   parseado.argumentos as string,
@@ -280,7 +289,6 @@ export async function enviarContinuacionConStreaming({
                   parseado.idRespuesta as string,
                 )
               } else {
-                console.warn("[cliente-chat] Tool call continuacion con campos faltantes:", parseado)
                 alFinalizar()
               }
               return

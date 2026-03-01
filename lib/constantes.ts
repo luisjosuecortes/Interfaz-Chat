@@ -50,12 +50,20 @@ export const INSTRUCCIONES_SISTEMA = [
   "",
   // Ejecucion de codigo
   "CODE EXECUTION:",
-  "- You have access to the `ejecutar_codigo` tool to run Python or JavaScript code in the user's browser.",
-  "- Use it to verify calculations, test logic, analyze data, or produce precise results.",
+  "- You have access to the `ejecutar_codigo` tool to run code in the user's browser.",
+  "- **ALWAYS USE JAVASCRIPT by default.** Only use Python when you NEED Python-specific scientific/mathematical libraries (numpy, scipy, pandas, sympy, sklearn, matplotlib).",
+  "- JavaScript runs INSTANTLY in a sandboxed iframe. Python requires loading a ~11MB WebAssembly runtime (Pyodide) which is slow on first use.",
+  "- For math operations, string processing, data manipulation, algorithms, or any general-purpose computation: USE JAVASCRIPT.",
+  "- For statistical analysis, linear algebra, symbolic math, dataframes, or scientific computing: use Python.",
   "- Python runs via Pyodide (WASM). JavaScript runs in a sandboxed iframe with no network access.",
-  "- Timeout: 10 seconds max per execution.",
+  "- Timeout: 30 seconds max per execution.",
   "- Use this tool when precision matters: run code to verify before presenting numerical results.",
   "- Do NOT use it for trivial operations the user can verify mentally (e.g., 2+2).",
+  "",
+  "IMPORTANT: In Python, always use print() to display results explicitly. There is basic auto-display for the last expression (like REPL), but it only works for simple cases. Always prefer explicit print().",
+  "- WRONG: `result = integrate(x**2, x)` then just `result` on the last line (may not display).",
+  "- CORRECT: `result = integrate(x**2, x)` then `print(result)` (always displays the result).",
+  "- For JavaScript, the return value of the last expression is automatically captured (like eval).",
   "",
   "CRITICAL RESTRICTIONS for code execution:",
   "- NEVER use input(), sys.stdin, or any interactive input functions. Code runs in WASM without stdin.",
@@ -75,3 +83,26 @@ export const INSTRUCCIONES_SISTEMA = [
   "  (limited), plotly, bokeh, seaborn (use matplotlib directly).",
   "- If unsure whether a package is available, write code that gracefully handles ImportError.",
 ].join("\n")
+
+// Definicion de herramientas para la API de OpenAI (compartida entre route.ts y continuar/route.ts)
+export const HERRAMIENTAS_CHAT = [
+  {
+    type: "web_search" as const,
+    search_context_size: "medium" as const,
+  },
+  {
+    type: "function" as const,
+    name: "ejecutar_codigo",
+    description: "Ejecuta codigo Python o JavaScript en el navegador del usuario y retorna la salida. SIEMPRE prefiere JavaScript por defecto (instantaneo). Usa Python solo para librerias cientificas (numpy, scipy, pandas, sympy, sklearn). JavaScript corre en iframe sandboxed. Python via Pyodide WASM (~11MB primera carga). Timeout: 30 segundos.",
+    parameters: {
+      type: "object" as const,
+      properties: {
+        lenguaje: { type: "string" as const, enum: ["python", "javascript"], description: "Lenguaje del codigo a ejecutar" },
+        codigo: { type: "string" as const, description: "El codigo fuente a ejecutar" },
+      },
+      required: ["lenguaje", "codigo"],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
+] as const

@@ -12,7 +12,7 @@ const LENGUAJES_EJECUTABLES: Set<string> = new Set([
 ])
 
 /** Tiempo maximo de ejecucion antes de interrumpir (ms) */
-const TIMEOUT_EJECUCION_MS = 10_000
+const TIMEOUT_EJECUCION_MS = 30_000
 
 /** Paquetes disponibles en Pyodide 0.27.5 (top-level import names).
  *  Se usa para pre-validar imports en la UI (boton Ejecutar) y dar errores claros. */
@@ -323,10 +323,12 @@ function postProcesarImagenes(salidas: EntradaConsola[]): EntradaConsola[] {
 
 /** Ejecuta Python en un Web Worker dedicado con Pyodide.
  *  El Worker tiene su propio event loop — loops infinitos (while True) no congelan la UI.
- *  Timeout real: si el Worker no responde en 10s, se termina con worker.terminate()
+ *  Timeout real: si el Worker no responde en 30s, se termina con worker.terminate()
  *  y se recrea en la siguiente ejecucion.
- *  Mutex via cola de promesas: solo una ejecucion activa a la vez (FIFO). */
-async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
+ *  Mutex via cola de promesas: solo una ejecucion activa a la vez (FIFO).
+ *  @param alIniciarEjecucion - callback invocado cuando Pyodide esta listo y la ejecucion comienza
+ *    (permite a la UI transicionar de "cargando" a "ejecutando") */
+async function ejecutarPython(codigo: string, alIniciarEjecucion?: () => void): Promise<ResultadoEjecucion> {
   const salidas: EntradaConsola[] = []
   const inicio = performance.now()
 
@@ -354,6 +356,9 @@ async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
 
     const worker = await obtenerWorker()
     const idEjecucion = `exec-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+    // Pyodide esta listo: notificar a la UI para transicionar de "cargando" a "ejecutando"
+    alIniciarEjecucion?.()
 
     return await new Promise<ResultadoEjecucion>((resolve) => {
       let resuelto = false
@@ -450,12 +455,16 @@ async function ejecutarPython(codigo: string): Promise<ResultadoEjecucion> {
 
 /** Ejecuta codigo en el lenguaje especificado.
  *  JavaScript/TypeScript: iframe sandboxed (sincrono, seguro, sin descargas)
- *  Python: Web Worker con Pyodide WASM (primer uso descarga ~11MB, despues cacheado via Cache API) */
+ *  Python: Web Worker con Pyodide WASM (primer uso descarga ~11MB, despues cacheado via Cache API)
+ *  @param alIniciarEjecucion - callback invocado cuando el runtime esta listo y la ejecucion comienza
+ *    (para Python: se invoca despues de cargar Pyodide; para JS: inmediatamente) */
 export async function ejecutarCodigo(
   codigo: string,
-  lenguaje: string
+  lenguaje: string,
+  alIniciarEjecucion?: () => void
 ): Promise<ResultadoEjecucion> {
   const familia = normalizarLenguaje(lenguaje)
-  if (familia === "python") return ejecutarPython(codigo)
+  if (familia === "python") return ejecutarPython(codigo, alIniciarEjecucion)
+  alIniciarEjecucion?.()
   return ejecutarJavaScript(codigo)
 }

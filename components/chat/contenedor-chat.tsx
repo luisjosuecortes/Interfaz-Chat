@@ -346,7 +346,6 @@ export function ContenedorChat() {
 
     async function manejarToolCall(nombre: string, argumentos: string, callId: string, idRespuesta: string, profundidad: number = 0) {
       if (nombre !== "ejecutar_codigo") {
-        // Tool no reconocido: limpiar estado para evitar bloqueo permanente
         establecerEscribiendo(false)
         referenciaControlador.current = null
         return
@@ -361,6 +360,9 @@ export function ContenedorChat() {
         return
       }
 
+      // Indicador insertado: sirve para saber si el catch debe usar replace o append
+      let indicadorInsertado = false
+
       try {
         const args = JSON.parse(argumentos) as { lenguaje: string; codigo: string }
         const esPython = args.lenguaje === "python" || args.lenguaje === "py"
@@ -368,6 +370,7 @@ export function ContenedorChat() {
         // 1. Indicador temporal en el chat (code fence con pseudo-lenguaje para UI premium)
         textoRespuestaFinal += `\n\n\`\`\`ejecutando:${args.lenguaje}\n\`\`\`\n\n`
         actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
+        indicadorInsertado = true
 
         // 2. Abrir panel de artefactos + ejecutar (operacion atomica)
         const artefacto = {
@@ -463,11 +466,16 @@ export function ContenedorChat() {
       } catch (errorToolCall) {
         cerrarArtefacto()
         const msgError = errorToolCall instanceof Error ? errorToolCall.message : "Error desconocido"
-        // Si habia indicador temporal, reemplazarlo con el error
-        textoRespuestaFinal = textoRespuestaFinal.replace(
-          /```ejecutando:[^\n]*\n```\n\n/,
-          `**Error al ejecutar codigo:** ${msgError}\n\n`
-        )
+        if (indicadorInsertado) {
+          // Reemplazar indicador temporal con el error
+          textoRespuestaFinal = textoRespuestaFinal.replace(
+            /```ejecutando:[^\n]*\n```\n\n/,
+            `**Error al ejecutar codigo:** ${msgError}\n\n`
+          )
+        } else {
+          // Error antes de insertar indicador (ej: JSON.parse fallo): agregar al final
+          textoRespuestaFinal += `\n\n**Error al ejecutar codigo:** ${msgError}\n\n`
+        }
         actualizarUltimoMensaje(idConversacion, textoRespuestaFinal)
         establecerEscribiendo(false)
         referenciaControlador.current = null
