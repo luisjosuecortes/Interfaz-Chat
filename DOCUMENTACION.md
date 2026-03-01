@@ -2,7 +2,7 @@
 
 ## Descripcion General
 
-PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
+PenguinChat es un asistente de inteligencia artificial construido con **Next.js 16**, **React 19** y **TypeScript 5**. Se conecta a la API de OpenAI (Responses API) y soporta streaming en tiempo real, busqueda web, razonamiento (reasoning), adjuntos multimodales, artefactos con panel lateral (codigo, HTML, SVG) y multiples modelos GPT. La arquitectura de proveedores es extensible para soportar Anthropic, Google y otros en el futuro.
 
 ---
 
@@ -18,22 +18,24 @@ chatslm/
 │   │       └── route.ts          # API para generar titulos de conversaciones
 │   ├── globals.css               # Estilos globales, tema y animaciones
 │   ├── layout.tsx                # Layout raiz (fuentes, providers, metadata)
-│   └── page.tsx                  # Pagina principal (renderiza ContenedorChat)
+│   └── page.tsx                  # Pagina principal (ProveedorArtefacto + ContenedorChat)
 │
 ├── components/                   # Componentes de React
 │   ├── chat/                     # Componentes especificos del chat
 │   │   ├── area-chat.tsx         # Area de mensajes con auto-scroll inteligente, titulo flotante y boton de sidebar
-│   │   ├── barra-lateral.tsx     # Sidebar con branding "PenguinChat" (tipografia serif) y lista de conversaciones
-│   │   ├── bloque-codigo.tsx     # Bloque de codigo con syntax highlighting
+│   │   ├── barra-lateral.tsx     # Sidebar con branding "PenguinChat" (tipografia serif), lista de conversaciones y CSS visibility (sin render condicional)
+│   │   ├── bloque-codigo.tsx     # Bloque de codigo con syntax highlighting y deteccion de artefactos
 │   │   ├── burbuja-mensaje.tsx   # Mensaje individual (usuario/asistente)
-│   │   ├── contenedor-chat.tsx   # Componente orquestador principal
-│   │   ├── entrada-mensaje.tsx   # Input con selector de modelos (Popover dos paneles) y adjuntos
+│   │   ├── contenedor-chat.tsx   # Componente orquestador principal (layout split chat + artefacto + drag-and-drop global)
+│   │   ├── entrada-mensaje.tsx   # Input con selector de modelos, adjuntos, paste (Ctrl+V), drag-and-drop y limite de 10 adjuntos
 │   │   ├── indicador-busqueda.tsx    # Indicador de busqueda web activa
 │   │   ├── indicador-pensamiento.tsx # Boton + contenido expandido de reasoning (separados para layout flex)
 │   │   ├── indicador-rag.tsx     # Indicador de estado de documentos RAG
+│   │   ├── lightbox-imagen.tsx   # Lightbox modal para ver imagenes en grande (React portal)
+│   │   ├── panel-artefacto.tsx   # Panel lateral para visualizar artefactos (codigo, HTML, SVG)
 │   │   ├── pantalla-inicio.tsx   # Pantalla inicial de bienvenida
 │   │   ├── renderizador-markdown.tsx # Procesador de Markdown con pipeline LaTeX de 5 pasos
-│   │   ├── tarjeta-archivo.tsx     # Tarjeta premium de archivo con franja de color, badge y miniatura PDF
+│   │   ├── tarjeta-archivo.tsx     # Tarjeta de archivo con miniatura PDF, click-to-lightbox para imagenes
 │   │   └── tarjetas-citacion.tsx # Tarjetas de fuentes citadas
 │   └── ui/                       # Componentes de UI reutilizables (shadcn)
 │       ├── button.tsx            # Boton con variantes (CVA)
@@ -56,6 +58,7 @@ chatslm/
 │   ├── use-miniatura-pdf.ts       # Hook para generar miniaturas de PDFs (pdfjs-dist, cache global)
 │   ├── almacen-chat.ts           # Store global (useSyncExternalStore)
 │   ├── cliente-chat.ts           # Cliente de streaming para la API
+│   ├── contexto-artefacto.tsx    # React Context para el sistema de artefactos (panel lateral)
 │   ├── hooks.ts                  # Hooks personalizados reutilizables
 │   ├── modelos.ts                # Catalogo de modelos y proveedores de IA
 │   ├── tipos.ts                  # Tipos e interfaces TypeScript
@@ -85,13 +88,13 @@ El proyecto sigue una arquitectura **Component-Driven** con un **Store centraliz
                     │  (contenedor-chat)  │
                     └────────┬────────────┘
                              │
-              ┌──────────────┼──────────────┐
-              │              │              │
-     ┌────────▼──────┐ ┌─────▼────┐ ┌───────▼───────┐
-     │  BarraLateral │ │ AreaChat │ │ PantallaInicio│
-     │ (sidebar)     │ │ (msgs)   │ │ (bienvenida)  │
-     └───────────────┘ └────┬─────┘ └───────────────┘
-                            │
+              ┌──────────────┼──────────────┬──────────────┐
+              │              │              │              │
+     ┌────────▼──────┐ ┌─────▼────┐ ┌───────▼───────┐ ┌───▼──────────┐
+     │  BarraLateral │ │ AreaChat │ │ PantallaInicio│ │PanelArtefacto│
+     │ (sidebar)     │ │ (msgs)   │ │ (bienvenida)  │ │(panel lateral│
+     └───────────────┘ └────┬─────┘ └───────────────┘ │ 45% desktop) │
+                            │                          └──────────────┘
                    ┌────────┼────────┐
                    │        │        │
           ┌────────▼──┐ ┌───▼────┐ ┌─▼───────────────┐
@@ -103,6 +106,13 @@ El proyecto sigue una arquitectura **Component-Driven** con un **Store centraliz
      ┌─────────┼─────────┐
      │         │         │
   Markdown  Codigo  Citaciones
+              │
+    ┌─────────▼─────────┐
+    │ Si ≥25 lineas o   │
+    │ SVG/HTML completo:│
+    │ → TarjetaArtefacto│
+    │ → abre panel      │
+    └───────────────────┘
 ```
 
 ### Flujo de Datos
@@ -165,12 +175,33 @@ El componente raiz de la aplicacion. Gestiona:
 - Generacion automatica de titulos en el primer intercambio
 - Control de la generacion (detener streaming)
 - Streaming con throttle de 50ms para limitar re-renders
+- **Lectura directa del modelo** (`obtenerModeloSeleccionado()`): todas las funciones asincronas que envian mensajes al modelo (enviar, editar, reenviar, regenerar) leen el modelo seleccionado directamente del store al momento de ejecutar, en vez de capturarlo del closure de React. Esto evita que `React.memo` en `BurbujaMensaje` (que ignora cambios de callbacks para optimizar renders) provoque que se use un modelo desactualizado
+- **Layout split chat + artefacto**: cuando hay un artefacto activo, el area de chat se oculta en mobile y comparte el espacio en desktop (55% chat / 45% panel, max 700px). Usa `useArtefacto()` del contexto para reaccionar al estado del panel
+- **Cierre automatico del panel**: `cerrarArtefacto()` se llama al cambiar de conversacion (`manejarSeleccionarConversacion`) y al crear nueva conversacion (`manejarNuevaConversacion`)
 - **Patron reserved-space (ChatGPT/Claude):** en los 4 handlers, `establecerEscribiendo(true)` + `agregarMensaje(asistente, "")` ocurren ANTES del `await obtenerContenidoConContextoRAG`, garantizando espacio reservado y scroll inmediato sin ventana invisible
 - **Indexacion RAG al adjuntar** (`manejarAdjuntoRAG`): procesa documentos inmediatamente al adjuntarlos, no al enviar
 - **ID temporal de RAG** (`idRAGTemporal`): almacena vectores antes de crear la conversacion, luego transfiere
 - **Bloqueo de envio** (`estaIndexandoRAG`): impide enviar mientras se indexan documentos
 - **Inyeccion de contexto RAG** (`obtenerContenidoConContextoRAG`): busca fragmentos relevantes y los prepende al mensaje
 - **Truncamiento de historial** (`truncarHistorial`): recorta mensajes antiguos cuando el historial excede ~150K caracteres
+- **Drag-and-drop global** (`manejarDragOverGlobal`, `manejarDropGlobal`): handlers en el div raiz que permiten arrastrar archivos desde el explorador de archivos a cualquier parte de la pagina. Los archivos dropeados se pasan a `EntradaMensaje` via props `archivosExternos` / `alLimpiarArchivosExternos`. Un overlay visual con borde punteado (`fixed inset-0 z-50 pointer-events-none`) indica la zona de drop activa
+
+**Layout del area principal:**
+
+```tsx
+<main className="flex flex-1 min-w-0">
+  {/* Chat: se oculta en mobile cuando hay artefacto */}
+  <div className={artefactoActivo ? "hidden lg:flex lg:flex-1" : "flex-1"}>
+    {/* AreaChat o PantallaInicio */}
+  </div>
+  {/* Panel artefacto: 45% en desktop, 100% en mobile */}
+  {artefactoActivo && (
+    <div className="w-full lg:w-[45%] lg:max-w-[700px] shrink-0 h-full">
+      <PanelArtefacto />
+    </div>
+  )}
+</main>
+```
 
 ### `almacen-chat.ts` - Store Global
 
@@ -185,6 +216,8 @@ Store implementado con `useSyncExternalStore` de React 19, sin dependencias exte
 
 **Patron Observer:** Los suscriptores se notifican automaticamente al cambiar el estado.
 
+**Lectura directa del modelo (`obtenerModeloSeleccionado()`):** Funcion exportada que lee `estado.modeloSeleccionado` directamente del store sin pasar por el hook de React. Se usa en `contenedor-chat.tsx` dentro de funciones asincronas (`enviarConsultaAlModelo`, `manejarEnvio`, etc.) para obtener el modelo actual al momento de ejecutar, evitando closures stale causados por `React.memo` con comparador personalizado en `BurbujaMensaje` (que ignora cambios de callbacks).
+
 ### `cliente-chat.ts` - Cliente de Streaming
 
 Funcion `enviarMensajeConStreaming()` que:
@@ -192,6 +225,7 @@ Funcion `enviarMensajeConStreaming()` que:
 - Lee el stream con `ReadableStream` y `TextDecoder`
 - Parsea eventos SSE (Server-Sent Events) linea por linea
 - Maneja buffer incompleto para chunks parciales
+- **Flush del buffer residual**: al terminar el stream (`done = true`), procesa cualquier dato restante en `bufferIncompleto` que no termine con `\n`. Esto previene perdida silenciosa del final de la respuesta cuando el ultimo chunk del servidor no termina con salto de linea
 - Despacha callbacks tipados: `alActualizar`, `alBusquedaIniciada`, `alCitacion`, etc.
 
 ### `burbuja-mensaje.tsx` - Mensaje Individual
@@ -220,6 +254,26 @@ const [pensamientoExpandido, establecerPensamientoExpandido] = useState(false)
 // El avatar va en flex row si es el asistente (para adornos inline)
 const tieneIndicadorInline = !esUsuario
 ```
+
+**Auto-expansion del pensamiento durante streaming:**
+
+Cuando el modelo transiciona de "pensando" a "completado" durante streaming, el contenido del pensamiento se auto-expande para que no desaparezca abruptamente. Se implementa con el patron React de "ajustar estado durante el render" (no useEffect):
+
+```typescript
+const [prevEstadoPensamiento, establecerPrevEstadoPensamiento] = useState<string | undefined>(undefined)
+if (prevEstadoPensamiento !== mensaje.pensamiento?.estado) {
+  establecerPrevEstadoPensamiento(mensaje.pensamiento?.estado)
+  if (
+    prevEstadoPensamiento === "pensando" &&
+    mensaje.pensamiento?.estado === "completado" &&
+    mensaje.pensamiento.resumen.length > 0
+  ) {
+    establecerPensamientoExpandido(true)
+  }
+}
+```
+
+Para mensajes historicos (ya completados al montar), `prevEstadoPensamiento` empieza como `undefined` (no como `"pensando"`), asi que no se auto-expande — solo se auto-expande cuando el usuario ve la transicion en vivo.
 
 **Layout del avatar (estilo Gemini):**
 
@@ -262,12 +316,26 @@ Componente de visualizacion de archivos adjuntos con tres modos: imagen, PDF con
 **Estructura del componente:**
 - `TarjetaArchivoConMiniatura` (wrapper con `memo`): resuelve el problema de usar hooks dentro de `.map()` al encapsular `useMiniaturaPDF` en un componente separado
 - `TarjetaArchivo` (componente puro con `memo`): renderiza la tarjeta segun el tipo:
-  - **Imagenes**: miniatura directa del contenido base64 (h-12/h-24)
+  - **Imagenes**: miniatura directa del contenido base64 (h-32/h-24)
   - **PDFs**: miniatura compacta generada por `useMiniaturaPDF` + nombre truncado (w-100px/w-130px)
   - **Archivos genericos**: chip minimalista con icono gris + nombre truncado + extension en texto gris (h-9/h-10)
 - **Variantes**: `compacta` (input, mas pequena) y `expandida` (burbuja de mensaje, mas grande)
-- **Boton eliminar**: aparece en hover (opacity transition), solo si se pasa `alEliminar`
+- **Boton eliminar**: aparece en hover (opacity transition), solo si se pasa `alEliminar`. Usa `!bg-black/60 hover:!bg-black/80` con `!text-white` y `ring-1 ring-white/30` para contraste sobre cualquier fondo de imagen (los `!important` previenen que `variant="ghost"` de shadcn sobreescriba colores en hover)
+- **Click-to-lightbox**: las imagenes siempre muestran `cursor-pointer` y abren `LightboxImagen` al hacer click, en ambas variantes. El boton eliminar usa `e.stopPropagation()` para no interferir con el click de lightbox
 - **Sin franjas de color, sin badges coloreados, sin fondos de icono**: diseno limpio con fondo `--color-claude-sidebar` y borde sutil
+
+### `lightbox-imagen.tsx` - Lightbox Modal para Imagenes
+
+Componente ligero para visualizar imagenes en grande, sin dependencias externas.
+
+**Caracteristicas:**
+- **React portal**: renderiza en `document.body` via `createPortal` para superponer toda la UI
+- **Overlay**: fondo semi-transparente (`bg-black/80`) con `backdrop-blur-sm` y animacion `fade-in` (200ms)
+- **Cierre triple**: tecla Escape (via `addEventListener("keydown")`), click fuera de la imagen (`onClick` en overlay), o boton X (esquina superior derecha con fondo `bg-white/10`)
+- **Bloqueo de scroll**: establece `document.body.style.overflow = "hidden"` al montar y restaura al desmontar
+- **Imagen responsive**: `max-h-[90vh] max-w-[90vw] object-contain` con `rounded-lg shadow-2xl`
+- **`stopPropagation`**: click en la imagen no cierra el lightbox (solo en el overlay)
+- **Cleanup**: `useEffect` con return para remover listener y restaurar overflow
 
 ### `use-miniatura-pdf.ts` - Hook de Miniaturas PDF
 
@@ -315,6 +383,10 @@ Esto se calcula comparando `mensaje.rol` con `mensajeAnterior.rol` en el `.map()
 
 El div interior que contiene la lista de mensajes usa `pt-14 pb-3`: 56px de padding superior para que el primer mensaje no quede oculto bajo el header flotante (titulo + boton de sidebar, posicionado `absolute top-3`), y 12px de padding inferior que junto con el sentinel dan un margen final compacto de ~28px debajo del ultimo mensaje.
 
+### `contexto-mensaje.tsx` [NEW]
+
+Un mini-contexto en memoria de uso estrictamente local (no engloba la UI, engloba solo una burbuja individual). Extraordinariamente útil para inyectar metadatos transitorios o variables dinámicas a componentes de nodos muy anidados como ASTs del analizador de Markdown, preservando así las optimizaciones de caché del React y posibilitando la auto-apertura inteligente de artefactos en el streaming.
+
 ### `renderizador-markdown.tsx` - Procesador Markdown con Pipeline LaTeX
 
 Usa `react-markdown` con plugins:
@@ -356,24 +428,166 @@ La funcion de reemplazo añade llaves automaticamente: `h_t` → `h_{t}` → `$h
 
 Captura tokens con al menos un `^{...}` o `_{...}` (con llaves). El patron de llaves soporta hasta 2 niveles de anidamiento: `{C_{out} × C_{in}}`. Los caracteres previos al operador pueden ser multi-caracter (ej: `Conv`, `∂L/∂W`) pero excluye separadores comunes para evitar capturar contexto no matematico.
 
-### `bloque-codigo.tsx` - Syntax Highlighting
+### `bloque-codigo.tsx` - Syntax Highlighting y Deteccion de Artefactos
 
-Usa `react-syntax-highlighter` con PrismLight para:
-- Resaltado de 65+ lenguajes de programacion (incluyendo C/C++, Rust, Go, SQL, Docker, YAML, GraphQL, MATLAB, etc.)
-- Tema `oneDark` (colores de sintaxis intactos)
+Componente dual: renderiza bloques de codigo con syntax highlighting y detecta automaticamente cuando un bloque debe mostrarse como artefacto en un panel lateral.
+
+**Componentes exportados:**
+
+| Componente | Descripcion |
+|------------|-------------|
+| `BloqueCodigoConResaltado` | Componente principal: si el codigo califica como artefacto, muestra `TarjetaArtefacto`; si no, muestra el bloque inline con tema claro (`oneLight`), barra superior y boton copiar |
+| `CodigoConResaltado` | Componente para el panel de artefactos: tema claro (`oneLight`) con fondo transparente (delegado al contenedor `--color-claude-sidebar`) y `overflow: "visible"` para delegar scroll al contenedor exterior. Sin cabecera ni deteccion |
+
+**Constantes exportadas:**
+
+| Constante | Descripcion |
+|-----------|-------------|
+| `NOMBRES_LENGUAJE` | Mapa de alias → nombre bonito (ej: `ts` → `TypeScript`, `py` → `Python`) |
+| `EXTENSIONES_DESCARGA` | Mapa de lenguaje → extension de archivo para descarga (ej: `typescript` → `ts`) |
+
+**Deteccion de artefactos (`debeSerArtefacto`):**
+
+| Condicion | Resultado |
+|-----------|-----------|
+| Lenguaje `svg` o contenido empieza con `<svg` | Siempre artefacto (previsualizacion SVG) |
+| Lenguaje `html`/`markup` con `<!DOCTYPE` o `<html>` | Siempre artefacto (previsualizacion HTML) |
+| Codigo con ≥25 lineas | Artefacto (codigo largo) |
+| Codigo con <25 lineas | Bloque inline normal |
+
+El umbral de 25 lineas se eligio para deteccion puramente frontend (sin intencion del modelo): filtra snippets triviales y bloques de explicacion sin perder codigo sustancial como funciones, componentes o clases completas.
+
+**Funciones internas de artefactos:**
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `generarIdArtefacto(contenido)` | Genera ID determinista via hash del contenido (primeros 100 chars). Usa un muestreo corto para que el ID sea estable durante streaming (append-only): mientras se generan tokens nuevos al final, el ID no cambia |
+| `debeSerArtefacto(codigo, lenguaje, totalLineas)` | Heuristica de deteccion: SVG, HTML completo, o ≥25 lineas |
+| `determinarTipo(lenguaje, codigo)` | Clasifica en `"svg"`, `"html"`, `"markdown"` o `"codigo"` |
+| `inferirTitulo(codigo, lenguaje)` | Busca nombre de archivo en comentarios de la primera linea (`// app.tsx`, `# main.py`, `<!-- index.html -->`). Fallback: nombre del lenguaje |
+
+**Flujo de deteccion:**
+
+```
+BloqueCodigoConResaltado recibe {codigo, lenguaje}
+    │
+    ├── ¿deshabilitarArtefacto? → renderizar bloque inline
+    │
+    ├── ¿estaDisponible (contexto)? → si no hay ProveedorArtefacto, bloque inline
+    │
+    ├── ¿debeSerArtefacto(codigo, lenguaje, totalLineas)?
+    │       │
+    │       ├── Si → TarjetaArtefacto (card clickable)
+    │       │         └── onClick → abrirArtefacto({id, tipo, titulo, contenido, lenguaje, totalLineas})
+    │       │                        └── PanelArtefacto se abre via React Context
+    │       │
+    │       └── No → Bloque inline (barra superior + syntax highlighting + boton copiar)
+    │
+    └── Sync en tiempo real: useEffect detecta si el panel muestra este artefacto
+        (comparando artefactoActivo.id con idArtefacto) y actualiza el contenido
+        via actualizarContenidoArtefacto() cuando el codigo cambia durante streaming
+```
+
+**`TarjetaArtefacto` (sub-componente):**
+
+Tarjeta clickable que sustituye al bloque de codigo en el chat. Diseño minimalista con:
+- Icono dinamico por tipo (`ICONOS_ARTEFACTO`: `FileCode2` para codigo, `Globe` para HTML, `Image` para SVG, `FileText` para markdown) en fondo oscuro (`#1e1e1e`) con contraste visual fuerte tipo VS Code icon badge
+- Titulo inferido del codigo
+- Badge con nombre del lenguaje y total de lineas
+- `ChevronRight` que aparece en hover (opacity transition)
+- Fondo `--color-claude-sidebar` con hover `--color-claude-sidebar-hover`
+
+**Syntax highlighting (temas duales):**
+
+Usa `react-syntax-highlighter` con PrismLight para resaltado de 65+ lenguajes de programacion (incluyendo C/C++, Rust, Go, SQL, Docker, YAML, GraphQL, MATLAB, etc.):
+- **Bloques inline en chat** (`BloqueCodigoConResaltado`): tema `oneLight` (fondo claro `hsl(230, 1%, 98%)` ≈ `#fafafb`). Barra superior con `--color-claude-sidebar`, borde con `--color-claude-input-border`, texto con `--color-claude-texto-secundario`. Coherente con el tema blanco de la app.
+- **Panel de artefactos** (`CodigoConResaltado`): tema `oneLight` con fondo `transparent` (el contenedor aplica `--color-claude-sidebar` = `#f9f9f9`). `overflow: "visible"` para delegar scroll al contenedor exterior con patron `absolute inset-0`.
 - Boton de copiar con retroalimentacion visual
 - Etiqueta del lenguaje en la barra superior
 
-**Colores neutrales del contenedor (adaptados al tema blanco/negro):**
+**Colores del contenedor inline (tema claro):**
 
 | Elemento | Color | Descripcion |
 |----------|-------|-------------|
-| Fondo del codigo | `#1e1e1e` | Gris neutro puro oscuro (estilo VSCode), sin tinte azulado |
-| Barra superior | `#171717` | Casi negro neutro (etiqueta de lenguaje + boton copiar) |
-| Borde del contenedor | `#2e2e2e` | Gris neutro oscuro, sin tinte de Tailwind gray-700 |
-| Fondo de tokens (`<code/>`) | `transparent` | Anula el fondo heredado (`#282c34`) para evitar "remarcados" en el texto |
+| Fondo del codigo | `hsl(230, 1%, 98%)` | Del tema `oneLight` (casi blanco) |
+| Barra superior | `var(--color-claude-sidebar)` | `#f9f9f9`, gris casi blanco |
+| Borde del contenedor | `var(--color-claude-input-border)` | `#e5e5e5`, gris neutro |
+| Texto de etiquetas | `var(--color-claude-texto-secundario)` | `#6b7280`, gris neutro |
+| Fondo de tokens (`<code/>`) | `transparent` | Anula el fondo heredado del tema para evitar "remarcados" |
 
-Estos colores reemplazan los anteriores (`#282c34`, `#1e1e2e`, `#374151`) que tenian tintes azulados/morados heredados de los temas One Dark y Catppuccin, rompiendo la coherencia del tema monocromo. El fondo de las etiquetas `<code>` internas es forzado a ser transparente mediante la variante `[&_code]:!bg-transparent` de Tailwind.
+### `panel-artefacto.tsx` - Panel Lateral de Artefactos
+
+Panel lateral que visualiza artefactos (codigo, HTML, SVG, markdown) abiertos desde `BloqueCodigoConResaltado` via React Context. Se renderiza condicionalmente en `ContenedorChat` cuando `artefactoActivo !== null`.
+
+**Estructura:**
+
+```
+┌─────────────────────────────────────┐
+│  Titulo     Lang · N lineas  [⊞][↓][×] │  ← Cabecera fija (fondo blanco)
+├─────────────────────────────────────┤
+│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+│░ CodigoConResaltado               ░│  ← Fondo claro #f9f9f9 en el
+│░ (o VistaPreviaArtefacto          ░│     contenedor scrollable (flex-1),
+│░  o RenderizadorMarkdown          ░│     llena toda la altura disponible
+│░  si modo preview activo)         ░│
+│░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+└─────────────────────────────────────┘
+```
+
+**Fondo claro del contenedor de contenido:** El area de contenido usa un patron `relative` + `absolute inset-0` para garantizar que los scrollbars siempre esten en los bordes del panel. El div exterior (`flex-1 min-h-0 relative`) reserva toda la altura disponible via flexbox, y el div interior (`absolute inset-0 overflow-auto`) llena ese espacio exactamente y maneja el scroll. `bg-[var(--color-claude-sidebar)]` (`#f9f9f9`) se aplica condicionalmente al exterior (solo en modo codigo, no en vista previa). La scrollbar global (`#d1d5db`/`#9ca3af`) se integra naturalmente con el fondo claro. Este patron (usado por VS Code/Monaco y Claude.ai) garantiza que la barra de scroll horizontal este siempre al fondo del panel, incluso para documentos cortos que no llenan la altura.
+
+**Acciones de la cabecera:**
+
+| Boton | Icono | Descripcion |
+|-------|-------|-------------|
+| Vista previa / Codigo | `Eye` / `Code2` | Toggle entre codigo y preview (HTML/SVG/Markdown). Markdown usa `RenderizadorMarkdown` directo; HTML/SVG usa iframe. Texto oculto en mobile (`hidden sm:inline`) |
+| Copiar | `Copy` / `Check` | Copia el contenido completo al portapapeles con retroalimentacion visual (2s). Etiqueta de texto oculta en mobile (`hidden sm:inline`) |
+| Descargar | `Download` | Descarga como archivo con extension correcta segun lenguaje (`EXTENSIONES_DESCARGA`). Etiqueta de texto oculta en mobile (`hidden sm:inline`) |
+| Cerrar | `X` | Cierra el panel y vuelve al chat completo |
+
+**`VistaPreviaArtefacto` (sub-componente):**
+
+Iframe sandboxed (`sandbox="allow-scripts"`) con `srcDoc` para renderizar HTML y SVG de forma segura:
+- **SVG**: se envuelve en un HTML minimo con fondo claro (`#f9f9f9`) y centrado flexbox
+- **HTML**: se inyecta directamente como `srcDoc`
+- Fondo blanco para el iframe, borde zero
+
+**`descargarArchivo` (funcion interna):**
+
+Crea un `Blob` con el contenido, genera `ObjectURL`, crea un enlace `<a>` temporal, triggera click programatico y limpia (`revokeObjectURL`).
+
+**Animacion de entrada:** Clase `.animate-entrada-panel` (CSS keyframe `entrada-panel`): slide-in desde la derecha (translateX 16px → 0) con fade (opacity 0 → 1) en 200ms ease-out.
+
+### `contexto-artefacto.tsx` - React Context para Artefactos
+
+Contexto de React que permite comunicacion entre `BloqueCodigoConResaltado` (emisor) y `ContenedorChat`/`PanelArtefacto` (receptores) sin prop drilling.
+
+**Patron:**
+
+```
+ProveedorArtefacto (page.tsx)
+    ├── ContenedorChat → useArtefacto() → lee artefactoActivo para layout split
+    │   ├── AreaChat → BurbujaMensaje → RenderizadorMarkdown → BloqueCodigoConResaltado
+    │   │                                                        └── useArtefacto() → abrirArtefacto()
+    │   └── PanelArtefacto → useArtefacto() → lee artefactoActivo para contenido
+    └── (cualquier componente hijo puede usar useArtefacto())
+```
+
+**API del contexto (`ValorContextoArtefacto`):**
+
+| Propiedad | Tipo | Descripcion |
+|-----------|------|-------------|
+| `estaDisponible` | `boolean` | `true` si `ProveedorArtefacto` esta montado. Evita que `BloqueCodigoConResaltado` intente renderizar tarjetas fuera del contexto |
+| `artefactoActivo` | `Artefacto \| null` | Artefacto visible en el panel (`null` = panel cerrado) |
+| `abrirArtefacto` | `(artefacto: Artefacto) => void` | Abre el panel con el artefacto dado. Estable via `useCallback` |
+| `cerrarArtefacto` | `() => void` | Cierra el panel (`null`). Estable via `useCallback` |
+| `actualizarContenidoArtefacto` | `(nuevoContenido: string, totalLineas: number) => void` | Actualiza el contenido del artefacto activo durante streaming. Usa `setState` funcional para evitar re-renders si el contenido no cambio. Estable via `useCallback` |
+
+**Decisiones de diseno:**
+
+- **React Context vs Store global**: Se usa Context en vez de modificar `almacen-chat.ts` porque el artefacto es estado de UI transiente (no se persiste, no afecta mensajes). Evita re-renders innecesarios del store que maneja conversaciones.
+- **`estaDisponible` flag**: Permite que `BloqueCodigoConResaltado` funcione sin el Provider (ej: en tests o previews aislados). El valor por defecto del contexto tiene `estaDisponible: false`, asi que sin Provider no se muestran tarjetas.
+- **Callbacks estables**: `abrirArtefacto` y `cerrarArtefacto` usan `useCallback` con dependencias vacias para evitar re-renders de consumers.
 
 ---
 
@@ -419,7 +633,7 @@ data: [FIN]
 - Soporta contenido multimodal (imagenes y archivos en el ultimo mensaje)
 - Herramienta de busqueda web habilitada por defecto
 - Reasoning habilitado para modelos con `tieneReasoning: true` (definido en `modelos.ts`)
-- `max_output_tokens: 4096`
+- `max_output_tokens: 16384`
 - **System prompt para formateo matematico, estructura de respuesta e idioma de razonamiento** (`INSTRUCCIONES_SISTEMA`): se envia via el parametro `instructions` de la Responses API. Instruye al modelo a: (1) usar delimitadores LaTeX (`$...$`, `$$...$$`) para todas las expresiones matematicas, con display math (`$$`) en lineas separadas para formulas clave; (2) estructurar listas numeradas con titulo en **bold** seguido de linea en blanco antes de la explicacion; (3) usar headers para secciones largas; (4) razonar en el mismo idioma del usuario (español si el usuario escribe en español). Complementa el pipeline de pre-procesamiento del frontend como defensa en profundidad.
 
 ### `POST /api/titulo` - Generacion de Titulos
@@ -470,6 +684,13 @@ Usa `gpt-4o-mini` con maximo 30 tokens para generar un titulo de 6 palabras.
 | `EstadoChat` | Estado global de la aplicacion |
 | `AccionesChat` | Todas las acciones disponibles del store |
 
+### Tipos Artefactos
+
+| Tipo/Interfaz | Descripcion |
+|----------------|-------------|
+| `TipoArtefacto` | Union literal: `"codigo"` \| `"html"` \| `"svg"` |
+| `Artefacto` | Contenido extraido del chat para el panel lateral: `id`, `tipo`, `titulo`, `contenido`, `lenguaje?`, `totalLineas` |
+
 ---
 
 ## Modelos y Proveedores (`lib/modelos.ts`)
@@ -517,7 +738,7 @@ const { haCopiado, copiar } = useCopiarAlPortapapeles(2000)
 // copiar: (texto: string) => Promise<void>
 ```
 
-Usado en: `burbuja-mensaje.tsx`, `bloque-codigo.tsx`
+Usado en: `burbuja-mensaje.tsx`, `bloque-codigo.tsx`, `panel-artefacto.tsx`
 
 ### `useAlmacenChat()`
 
@@ -627,6 +848,8 @@ Usado en: `area-chat.tsx`
 | `.edicion-entrada` | Transicion suave al modo edicion de mensajes (scale 0.98→1 en 200ms) |
 | `textarea:focus::placeholder` | Fade del placeholder al hacer focus (opacity 0.4 + translateX 4px) |
 | `.scrollbar-oculto` | Oculta scrollbar manteniendo scroll funcional (Firefox: `scrollbar-width: none`, Chrome: `::-webkit-scrollbar { display: none }`) |
+| `.scrollbar-codigo` | Scrollbar sutil para panel de codigo sobre fondo oscuro (thumb `#555`/`#777`, track transparente; Firefox: `scrollbar-color: #555 transparent`) |
+| `.animate-entrada-panel` | Entrada del panel de artefactos desde la derecha (translateX 16px → 0, opacity 0 → 1, 200ms ease-out) |
 
 ### Estilos KaTeX (Formulas Matematicas)
 
@@ -744,6 +967,41 @@ OPENAI_API_KEY=sk-...   # Clave de API de OpenAI (requerida)
 32. **Listas sin indentacion (estilo Claude)**: `list-style-position: inside` + `padding-left: 0` + `li > p { display: inline }` para que las listas queden al ras del margen izquierdo sin indentacion en el primer nivel
 33. **Razonamiento en el idioma del usuario**: system prompt instruye al modelo a razonar y pensar en el mismo idioma que usa el usuario (español si pregunta en español)
 34. **Exclusión de archivos compilados en ESLint**: la carpeta `public/` fue ignorada vía `eslint.config.mjs` para evitar advertencias de variables no usadas producidas por librerías dependientes minificadas (como `pdf.worker.min.mjs`); manteniendo el proyecto en `0 warnings`.
+35. **Sistema de artefactos** (panel lateral): bloques de codigo grandes (≥25 lineas), SVGs, HTML completo y bloques markdown se detectan automaticamente en el frontend y se muestran como tarjetas clickables en el chat. Al hacer click, se abre un panel lateral (45% desktop, 100% mobile) con syntax highlighting, boton de copiar, descarga y vista previa (HTML/SVG/Markdown). Deteccion puramente frontend sin modificar el modelo ni el system prompt.
+36. **Panel de artefactos** (`panel-artefacto.tsx`): panel lateral con cabecera informativa (titulo, lenguaje, lineas), acciones (copiar, descargar, toggle preview, cerrar), `CodigoConResaltado` para visualizacion de codigo, `VistaPreviaArtefacto` (iframe sandboxed) para HTML/SVG, y `RenderizadorMarkdown` para preview de markdown. Animacion de entrada slide-in desde la derecha.
+37. **Tarjeta de artefacto** en el chat: sustituye al bloque de codigo inline con una card minimalista mostrando icono dinamico por tipo (`ICONOS_ARTEFACTO`: `FileCode2`/`Globe`/`Image`/`FileText`) en fondo oscuro, titulo inferido del codigo, lenguaje y total de lineas. Al hacer click, abre el panel lateral via React Context (`useArtefacto`).
+38. **Deteccion inteligente de artefactos**: heuristicas frontend que identifican SVGs (lenguaje o contenido `<svg`), HTML completo (`<!DOCTYPE`/`<html>`), markdown (lenguaje `markdown`/`md`), y codigo largo (≥25 lineas). Titulo inferido automaticamente de comentarios en la primera linea del codigo (`// app.tsx`, `# main.py`).
+39. **React Context para artefactos** (`contexto-artefacto.tsx`): comunicacion entre `BloqueCodigoConResaltado` (emisor) y `PanelArtefacto` (receptor) sin prop drilling, con flag `estaDisponible` para funcionar sin Provider.
+40. **Layout split responsive para artefactos**: en desktop el chat ocupa ~55% y el panel ~45% (max 700px). En mobile, el panel ocupa 100% y el chat se oculta (`hidden lg:flex`). Transicion animada con `duration-300`.
+41. **Sync en tiempo real de artefactos durante streaming**: cuando el usuario abre un artefacto mientras el modelo esta generando, el panel se actualiza en vivo conforme llegan nuevos tokens. Se logra con un ID estable (`generarIdArtefacto` hashea solo los primeros 100 chars del codigo) y un `useEffect` en `BloqueCodigoConResaltado` que detecta si el artefacto activo corresponde a este bloque y sincroniza el contenido via `actualizarContenidoArtefacto()` del contexto.
+42. **Modelo actualizado en edicion/reenvio/regeneracion**: al editar un mensaje y reenviarlo, el sistema usa el modelo seleccionado actualmente (no el que estaba seleccionado cuando se creo el mensaje original). Se logra leyendo `obtenerModeloSeleccionado()` directamente del store en vez de capturar el valor del closure de React, evitando stale closures causados por `React.memo`.
+43. **Escritura durante streaming**: el textarea de entrada de mensajes permite escribir mientras el modelo esta generando una respuesta. Solo el envio y adjuntar archivos estan bloqueados durante streaming (`puedeEnviar` controla el boton y la tecla Enter), permitiendo al usuario preparar su siguiente mensaje.
+44. **Auto-expansion del pensamiento al completarse**: cuando el modelo termina de pensar (transicion "pensando" → "completado"), el contenido del pensamiento se expande automaticamente para que no desaparezca. Solo se activa durante streaming en vivo, no para mensajes historicos. Usa el patron React de "ajustar estado durante el render" en vez de `useEffect` para cumplir con ESLint `react-hooks/set-state-in-effect`.
+45. **Fondo claro completo en panel de artefactos**: el contenedor scrollable del panel tiene `bg-[var(--color-claude-sidebar)]` (`#f9f9f9`) condicional (solo en modo codigo, no en vista previa). El fondo claro llena toda la altura disponible desde el primer frame, incluso durante streaming cuando el codigo aun no ocupa todo el espacio. Patron estandar de Claude.ai y ChatGPT Canvas: el fondo del panel es consistente con el tema light de la app.
+46. **Scrollbar horizontal fija al fondo del panel de artefactos**: el area de contenido del panel usa un patron `relative` + `absolute inset-0` (VS Code/Monaco pattern) para que los scrollbars siempre esten en los bordes del panel. El div exterior (`flex-1 min-h-0 relative`) define la altura via flexbox, el interior (`absolute inset-0 overflow-auto`) llena ese espacio y maneja el scroll. Esto garantiza que la barra horizontal este al fondo incluso para documentos cortos que no llenan la altura del panel.
+47. **Scrollbars finas y consistentes**: scrollbars horizontales y verticales de 6px en toda la app (webkit: `height: 6px` + `width: 6px`; Firefox: `scrollbar-width: thin`). El panel de artefactos usa la scrollbar global (`#d1d5db`/`#9ca3af`) que se integra naturalmente con el fondo claro. Las formulas LaTeX (`katex-display`) heredan el estilo global de 6px para scroll horizontal.
+48. **Flush del buffer residual en streaming**: al terminar el stream SSE (`done = true`), el cliente procesa cualquier dato restante en `bufferIncompleto` que no termine con `\n`. Esto previene perdida silenciosa del final de la respuesta cuando el ultimo chunk del servidor no incluye salto de linea final.
+49. **Limite de tokens aumentado a 16384**: `max_output_tokens` incrementado de 4096 a 16384, permitiendo respuestas tecnicas largas (~12000 palabras) sin truncamiento abrupto. 4096 tokens (~3000-3500 palabras) era insuficiente para explicaciones detalladas, codigo largo o analisis extensos.
+50. **Tema claro unificado** (`oneLight`): tanto los bloques de codigo inline (<25 lineas) como el panel de artefactos usan el tema `oneLight` de react-syntax-highlighter (fondo `hsl(230, 1%, 98%)` ≈ `#fafafb`, casi blanco). La barra superior usa `--color-claude-sidebar` y el borde usa `--color-claude-input-border`, coherentes con el tema blanco de la app. El panel usa fondo transparente delegando al contenedor (`--color-claude-sidebar` = `#f9f9f9`). Consistencia visual total entre inline y panel.
+51. **Overflow delegado en panel de artefactos**: `CodigoConResaltado` (componente del panel) usa `overflow: "visible"` en su customStyle para anular el `overflow: "auto"` que el tema `oneLight` aplica al PreTag via `pre[class*="language-"]`. Esto delega el manejo de scroll al contenedor exterior (`absolute inset-0 overflow-auto`), garantizando que la scrollbar horizontal este fija al fondo del panel incluso para archivos cortos. Sin esta anulacion, react-syntax-highlighter crea una scrollbar anidada a la altura del contenido.
+52. **Botones etiquetados en el panel de artefactos**: los botones de Copiar y Descargar en la cabecera del panel ahora incluyen etiquetas de texto (`hidden sm:inline`) ademas de los iconos, siguiendo el mismo patron del toggle de Preview/Codigo. Mejora la descubribilidad de las acciones en todos los modos (codigo y vista previa).
+53. **Soporte de artefactos visuales**: bloques de codigo con lenguajes como `markdown`, `svg` o `html` se detectan y abren en modo preview por defecto en vez de mostrar raw syntax al inicio. El toggle Codigo/Preview permite alternar entre la vista renderizada y el raw con syntax highlighting.
+54. **Iconos dinamicos por tipo de artefacto**: `TarjetaArtefacto` muestra un icono diferente segun el tipo de artefacto usando el mapa `ICONOS_ARTEFACTO`: `FileCode2` para codigo, `Globe` para HTML, `Image` para SVG, `FileText` para markdown. El icono mantiene fondo oscuro (`#1e1e1e`) con texto claro para contraste visual tipo VS Code icon badge.
+55. **Modo preview por defecto segun tipo**: al abrir un artefacto, el panel establece automaticamente el modo vista previa segun su tipo: markdown, HTML y SVG abren en preview (renderizado); el código general abre en modo codigo (raw). Usa el patron React de "ajustar estado durante el render" con `prevIdArtefacto` para detectar cambios sin `useEffect`.
+56. **Auto-Apertura Reactiva e Inteligente de Artefactos**: cuando un modelo genera (streaming) un artefacto de código grande (≥ 25 líneas) o un bloque interpretado (SVG, HTML), este necesita abrirse automáticamente. El gran reto arquitectónico es lograr esto sin *Prop Drilling* que perjudique la memoización de Markdown, ni variables globales que intercepten historiales antiguos. La solución (`lib/contexto-mensaje.tsx`) fue crear un ligerísimo **ContextoLocal** que envuelve puramente `RenderizadorMarkdown` de CADA mensaje. El componente `bloque-codigo.tsx` consume el Hook `useMensaje()` para saber si "su mensaje anfitrión se está generando ahora mismo". Todo ocurre localmente y sin re-renderizar masivamente nada más. 
+57. **Preview Markdown sin iframe**: a diferencia de HTML/SVG que usan iframe sandboxed, el preview de markdown renderiza directamente con `RenderizadorMarkdown` (componente React puro). Esto preserva estilos de la app (`.prosa-markdown`), soporte de KaTeX, tablas GFM y bloques de codigo anidados. Los bloques de codigo dentro del markdown se renderizan via `BloqueCodigoConResaltado` y, si son ≥25 lineas, se muestran como `TarjetaArtefacto` clickable (sin recursion infinita gracias a `deshabilitarArtefacto` del panel).
+57. **Fix "Maximum update depth exceeded" en sidebar**: el error ocurria porque `barra-lateral.tsx` usaba `{estaAbierta && (<>...</>)}` para renderizar condicionalmente TODO el contenido. Al abrir el sidebar, TODOS los componentes Radix (Tooltip + DropdownMenu por cada conversacion) se montaban simultaneamente, causando cascadas internas de `setState` que excedian el limite de React (`radix-ui@1.4.3` + React 19). **Fix**: se elimino el render condicional y se usa CSS (`overflow-hidden` + `w-0`) para ocultar el contenido cuando esta cerrado. Se agrega el atributo HTML5 `inert` cuando esta colapsado para prevenir focus/interaccion con teclado y screen readers. Beneficio adicional: la transicion CSS `w-64 → w-0` ahora tiene contenido para animar (antes montaba/desmontaba abruptamente). TypeScript workaround: `{ inert: true as unknown as boolean }` porque React 19 aun no exporta tipos perfectos para `inert`.
+58. **Auto-scroll en panel de artefactos durante streaming**: el panel lateral de artefactos (`panel-artefacto.tsx`) ahora reutiliza el hook `useScrollAlFondo` de `lib/hooks.ts` para hacer auto-scroll automatico mientras el modelo genera contenido. El `MutationObserver` del hook detecta cambios de `characterData` en el DOM y hace scroll instantaneo si el usuario no ha scrolleado manualmente hacia arriba. Un `useEffect` adicional fuerza scroll al fondo al cambiar de artefacto (`artefactoActivo?.id`).
+59. **Paste de imagenes del portapapeles (Ctrl+V) y drag-and-drop local**: `entrada-mensaje.tsx` soporta tres metodos de adjuntar archivos: (1) file picker via boton de clip, (2) paste del portapapeles (`onPaste` en el textarea) que detecta archivos via `clipboardData.items` y solo previene el paste de texto si hay archivos, (3) drag-and-drop local (`onDragOver`/`onDragLeave`/`onDrop` en el contenedor del input) con feedback visual (borde punteado + fondo tintado). Ademas, acepta archivos desde el drag-and-drop global de `ContenedorChat` via props `archivosExternos` / `alLimpiarArchivosExternos`, procesados con un `useEffect`. La funcion compartida `procesarArchivos()` centraliza la logica de lectura (`FileReader.readAsDataURL`), validacion por extension via `esArchivoSoportado()` (de `separadores-codigo.ts`) y limite de adjuntos. El `manejarDragLeave` usa `relatedTarget` para evitar falsos negativos al mover el cursor entre elementos hijos del contenedor.
+60. **Limite de 10 adjuntos por mensaje**: constante `MAXIMO_ADJUNTOS = 10` que limita la cantidad total de archivos/imagenes por mensaje. Se aplica en tres puntos: (1) `procesarArchivos()` calcula el espacio disponible y solo procesa archivos que caben, (2) el callback de `establecerAdjuntos` verifica el limite antes de agregar, (3) el boton de adjuntar archivo se deshabilita cuando se alcanza el limite (`disabled={adjuntos.length >= MAXIMO_ADJUNTOS}`). Funciona identicamente para file picker, paste, drag-and-drop local y drag-and-drop global.
+61. **Lightbox/modal para ver imagenes** (`lightbox-imagen.tsx`): componente ligero usando `createPortal` a `document.body` con overlay semi-transparente (`bg-black/80 backdrop-blur-sm`). Se cierra con Escape (via `addEventListener("keydown")`), click fuera de la imagen, o boton X. Bloquea el scroll del body (`overflow: hidden`) mientras esta abierto. Se integra en `tarjeta-archivo.tsx`: las imagenes siempre muestran `cursor-pointer` y abren el lightbox al hacer click, en ambas variantes (compacta y expandida). El boton eliminar usa `e.stopPropagation()` para no disparar el lightbox. El boton X de imagenes usa `!bg-black/60 hover:!bg-black/80` con `!text-white` y `ring-1 ring-white/30` para mantener contraste sobre fondos oscuros (los `!important` previenen que `variant="ghost"` de shadcn sobreescriba colores en hover).
+62. **Drag-and-drop global de archivos** (`contenedor-chat.tsx`): handlers `onDragOver`/`onDragLeave`/`onDrop` en el div raiz de `ContenedorChat` permiten arrastrar archivos desde el explorador de archivos del OS a cualquier parte de la pagina. Un overlay visual (`fixed inset-0 z-50 border-2 border-dashed pointer-events-none`) muestra la zona de drop activa. Solo se activa si `evento.dataTransfer.types` incluye "Files" (ignora drag de texto). Los archivos dropeados se almacenan en `archivosDropeados` state y se pasan a `EntradaMensaje` via props `archivosExternos` / `alLimpiarArchivosExternos`. `EntradaMensaje` los procesa via un `useEffect` que llama `procesarArchivos()` y limpia el state del padre. Compatible con los metodos existentes (file picker, paste, drag-and-drop local en el input).
+63. **Fix hydration error de Radix UI Popover** (`entrada-mensaje.tsx`): el Popover del selector de modelos causaba un error de hidratacion (`aria-controls` ID mismatch) porque Radix UI genera IDs internos diferentes en SSR vs cliente. **Fix**: deferred mounting con `estaMontado` state + `useEffect(() => set(true), [])`. El Popover solo se renderiza despues del primer mount en cliente; durante SSR se muestra un `<span>` con el nombre del modelo como placeholder. Esto preserva el textarea visible durante SSR (mejor FCP) sin romper la hidratacion.
+64. **Fix validacion de archivos adjuntos** (`entrada-mensaje.tsx`): la validacion anterior usaba `TIPOS_ACEPTADOS` (un Set de extensiones como `.pdf`) y comparaba contra `archivo.type` (un MIME type como `application/pdf`). Nunca coincidian, rechazando silenciosamente todos los archivos no-imagen con MIME type definido (PDFs, JSON, etc.). Los archivos de codigo (.ts, .py) pasaban por accidente porque su `archivo.type` es vacio en navegadores. **Fix**: se reemplazo la validacion por MIME type con `esArchivoSoportado(archivo.name)` de `separadores-codigo.ts`, que valida correctamente por extension de archivo, nombres conocidos (Dockerfile, Makefile) y lista negra. Se elimino el Set `TIPOS_ACEPTADOS` (ya no se necesita).
+65. **LaTeX Preview con convertidor LaTeX→Markdown**: los bloques de codigo con lenguaje `latex` o `tex` se detectan como artefactos visuales y se abren en modo preview por defecto. Como KaTeX solo renderiza formulas matematicas (no documentos completos), el preview usa `convertirLatexAMarkdown()`, un convertidor ligero de 11 pasos en `panel-artefacto.tsx` que transforma la estructura del documento LaTeX a Markdown: extrae body de `\begin{document}`, convierte `\section`→`##`, `\textbf`→`**`, `\textit`→`*`, listas enumerate/itemize→bullets markdown, entornos math (equation/align/gather)→`$$...$$`, y limpia preambulo/espaciado/caracteres especiales. Las formulas inline `$...$` y display `$$...$$` se preservan intactas para KaTeX. No requirio dependencias nuevas. Se agrego `"latex"` a `TipoArtefacto` en `tipos.ts` y el icono `Sigma` al mapa `ICONOS_ARTEFACTO`.
+66. **Edicion en vivo de artefactos**: todos los artefactos (codigo, HTML, SVG, markdown, LaTeX) ahora son editables directamente en el panel lateral. Se agrego un tercer modo de vista ("Editar") junto a los existentes ("Codigo" y "Preview"). El boton de lapiz (`Pencil` de lucide-react) en la cabecera alterna entre el modo edicion (textarea nativo monoespaciado) y la vista normal. El textarea usa `actualizarContenidoArtefacto()` del contexto de artefactos existente para sincronizar cambios en tiempo real. Al salir de edicion, el panel restaura automaticamente el modo adecuado segun el tipo (preview para visuales, codigo para programaticos). Durante el modo edicion, el toggle Preview/Codigo se oculta para evitar confusion. La edicion es temporal (vive en el estado React, no persiste), ideal para ajustes rapidos antes de copiar o descargar.
+65. **Fix boton X invisible en hover sobre imagenes** (`tarjeta-archivo.tsx`): el boton eliminar usaba `variant="ghost"` de shadcn que aplica `hover:bg-accent hover:text-accent-foreground` en hover, sobreescribiendo `bg-black/60` y `text-white` y haciendo la X invisible sobre imagenes. **Fix**: se agregaron modificadores `!important` de Tailwind (`!bg-black/60`, `hover:!bg-black/80`, `!text-white`) para que los estilos custom prevalezcan sobre los de la variante ghost. Aplicado a los 3 botones X del componente (imagenes, PDFs, y archivos genericos).
+66. **Previsualizacion de imagenes mas grande** (`tarjeta-archivo.tsx`): el tamano de previsualizacion de imagenes adjuntas en la variante compacta (area de input) se aumento de `h-20 w-20` (80px) a `h-32 w-32` (128px) para mejor visibilidad. La variante expandida (burbuja de mensaje) se mantiene en `h-24 w-24` (96px).
 
 ---
 
@@ -778,6 +1036,24 @@ El contenedor del input usa `overflow-hidden` para evitar scrollbars no deseados
 
 El `proveedorActivo` se maneja con estado local dentro de `EntradaMensaje`. Al seleccionar un modelo, el Popover se cierra automaticamente.
 
+**Adjuntos multimodales (4 metodos de entrada):**
+
+`EntradaMensaje` soporta cuatro metodos para adjuntar archivos, todos procesados por la funcion compartida `procesarArchivos()`:
+
+| Metodo | Handler | Descripcion |
+|--------|---------|-------------|
+| File picker | `manejarSeleccionArchivos` | Click en boton de clip → `<input type="file">` oculto |
+| Paste | `manejarPegar` | `onPaste` en textarea → `clipboardData.items` → solo `preventDefault` si hay archivos |
+| Drag-and-drop local | `manejarDragOver`/`manejarDragLeave`/`manejarDrop` | En el contenedor del input → feedback visual con borde punteado |
+| Drag-and-drop global | `useEffect` con prop `archivosExternos` | Archivos dropeados en cualquier parte de la pagina (gestionado por `ContenedorChat`) |
+
+**Constantes:**
+- `MAXIMO_ADJUNTOS = 10`: limite total de archivos/imagenes por mensaje
+- `TIPOS_IMAGEN` y `TIPOS_ARCHIVO`: strings para el atributo `accept` del input
+- Validacion de archivos: `esArchivoSoportado(nombre)` importado de `separadores-codigo.ts` (valida por extension, no por MIME type)
+
+**Drag-and-drop visual:** Cuando `estaArrastrando` es `true`, el contenedor del input muestra `border-dashed border-[var(--color-claude-acento)] bg-[var(--color-claude-acento)]/5`. El `manejarDragLeave` usa `relatedTarget` para evitar que al mover el cursor entre elementos hijos se desactive el estado visual prematuramente.
+
 ### Workaround Radix UI ScrollArea (issue #926)
 
 Radix UI inyecta un `<div>` interno en el `ScrollArea.Viewport` con `display: table; min-width: 100%`. Esto crea un contexto de formateo de tabla que expande el contenido al ancho total, ignorando restricciones de `overflow-hidden` y `truncate` en elementos hijos.
@@ -791,6 +1067,95 @@ Radix UI inyecta un `<div>` interno en el `ScrollArea.Viewport` con `display: ta
 4. Cada item de conversacion: `overflow-hidden` (capa de defensa 3)
 5. Texto del titulo: `flex-1 min-w-0 truncate` (truncado con elipsis)
 6. Boton de acciones: `shrink-0` (nunca se comprime)
+
+### Fix Sidebar Infinite Loop (CSS visibility vs render condicional)
+
+**Problema:** `barra-lateral.tsx` originalmente usaba `{estaAbierta && (<>...</>)}` para renderizar condicionalmente todo el contenido del sidebar. Con `radix-ui@1.4.3` + React 19, al abrir el sidebar TODOS los componentes Radix (Tooltip, DropdownMenu) se montaban simultaneamente, causando cascadas internas de `setState` que excedian el limite de actualizaciones de React ("Maximum update depth exceeded").
+
+**Solucion:** Se elimino el render condicional y se usa CSS para ocultar el contenido:
+- `overflow-hidden` + `w-0` en el `<aside>` hace invisible el contenido cuando esta cerrado
+- Atributo HTML5 `inert` previene focus, interaccion con teclado y screen readers cuando esta colapsado
+- Los componentes Radix permanecen montados (no hay mount/unmount) eliminando las cascadas de setState
+- La transicion CSS `w-64 → w-0` ahora anima suavemente (antes era un mount/unmount abrupto)
+
+**Implementacion:**
+```tsx
+<aside
+  className={cn("... overflow-hidden", estaAbierta ? "w-64" : "w-0")}
+  {...(!estaAbierta ? { inert: true as unknown as boolean } : {})}
+>
+  {/* Contenido SIEMPRE montado */}
+</aside>
+```
+
+**TypeScript:** `inert` es un atributo HTML5 valido pero React 19 no exporta tipos perfectos para el. El workaround `true as unknown as boolean` satisface TypeScript sin afectar el runtime.
+
+---
+
+## Sistema de Artefactos
+
+### Que son los Artefactos
+
+Los artefactos son bloques de contenido grande (codigo, HTML, SVG, markdown) que se extraen del flujo del chat y se visualizan en un panel lateral dedicado. Inspirado en Claude Artifacts y ChatGPT Canvas, pero con deteccion puramente frontend (no requiere cooperacion del modelo).
+
+**Artefactos son para codigo largo y contenido previsualizable, no para texto.** Un bloque de codigo corto (<25 lineas) se muestra inline normalmente. Solo codigo sustancial, SVGs, documentos HTML completos y bloques markdown largos se promueven a artefactos.
+
+### Arquitectura de Artefactos
+
+```
+BloqueCodigoConResaltado (renderizador-markdown → componentesMarkdown.code)
+    │
+    ├── Detecta: ¿codigo ≥ 25 lineas? ¿SVG? ¿HTML completo? ¿Markdown?
+    │
+    ├── Si → TarjetaArtefacto (card clickable en el chat)
+    │         │
+    │         └── onClick → useArtefacto().abrirArtefacto(artefacto)
+    │                        │
+    │                        └── React Context (ContextoArtefacto)
+    │                             │
+    │                             ├── ContenedorChat lee artefactoActivo → ajusta layout split
+    │                             │
+    │                             └── PanelArtefacto lee artefactoActivo → renderiza contenido
+    │                                  ├── CodigoConResaltado (syntax highlighting, tema oneLight)
+    │                                  ├── VistaPreviaArtefacto (iframe sandboxed, HTML/SVG)
+    │                                  └── RenderizadorMarkdown (preview markdown directo)
+    │
+    ├── Sync streaming: useEffect compara artefactoActivo.id con idArtefacto local
+    │   Si coinciden y el contenido cambio → actualizarContenidoArtefacto(codigo, totalLineas)
+    │   (ID estable: hash de primeros 100 chars, no cambia durante append-only)
+    │
+    └── No → Bloque inline normal (barra superior + codigo + boton copiar)
+```
+
+### Archivos del Sistema de Artefactos
+
+| Archivo | Descripcion |
+|---------|-------------|
+| `lib/tipos.ts` | `TipoArtefacto` ("codigo" \| "html" \| "svg" \| "markdown") y `Artefacto` (id, tipo, titulo, contenido, lenguaje, totalLineas) |
+| `lib/contexto-artefacto.tsx` | React Context + `ProveedorArtefacto` + `useArtefacto()` hook |
+| `components/chat/bloque-codigo.tsx` | Deteccion de artefactos + `TarjetaArtefacto` + `BloqueCodigoConResaltado` + `CodigoConResaltado` |
+| `components/chat/panel-artefacto.tsx` | Panel lateral completo con cabecera, acciones, codigo/preview |
+| `components/chat/contenedor-chat.tsx` | Layout split (chat + panel) condicionado a `artefactoActivo` |
+| `app/page.tsx` | Monta `ProveedorArtefacto` envolviendo `ContenedorChat` |
+| `app/globals.css` | Animacion `.animate-entrada-panel` (slide-in 200ms), scrollbar global fina (6px) usada en el panel |
+
+### Decisiones de Diseno (Artefactos)
+
+1. **Deteccion frontend-only (Opcion B):** Se eligio deteccion puramente en el frontend en vez de tags del modelo (Opcion A: `<artifact>`) o hibrida (Opcion C). La razon principal es que los modelos de OpenAI no estan entrenados para generar tags `<artifact>` como Claude, y modificar el system prompt para forzarlo produce resultados inconsistentes. La deteccion frontend funciona con cualquier modelo sin configuracion adicional.
+
+2. **React Context vs Store global:** El artefacto activo se gestiona con React Context (`ContextoArtefacto`) en vez de añadirlo al store centralizado (`almacen-chat.ts`). El artefacto es estado de UI transiente: no se persiste, no afecta mensajes, y no necesita sobrevivir recargas. Usar Context evita re-renders innecesarios del store de conversaciones.
+
+3. **Comunicacion via Context (no prop drilling):** `BloqueCodigoConResaltado` necesita abrir el panel, pero esta profundamente anidado en `renderizador-markdown.tsx` → `componentesMarkdown` (constante estatica fuera del componente para rendimiento). Pasar callbacks por props requeriria recrear `componentesMarkdown` en cada render, rompiendo la optimizacion de memo. Context permite comunicacion directa sin afectar el arbol de componentes.
+
+4. **Umbral de 25 lineas:** Para deteccion puramente frontend (sin intencion del modelo), 25 lineas filtra snippets triviales (explicaciones, configuraciones cortas, ejemplos) sin perder codigo sustancial (funciones completas, componentes, clases). Claude Artifacts usa >10 con cooperacion del modelo; al no tener esa señal, un umbral mas alto evita falsos positivos.
+
+5. **ID determinista estable durante streaming:** `generarIdArtefacto()` genera un hash de los primeros 100 caracteres del contenido para crear IDs estables. El muestreo corto (100 chars en vez de todo el contenido) garantiza que el ID no cambie durante streaming append-only: los tokens nuevos se agregan al final del codigo, pero los primeros 100 chars ya estan fijos. `BloqueCodigoConResaltado` usa este ID para detectar si el panel lateral muestra su artefacto y sincronizar el contenido en tiempo real via `actualizarContenidoArtefacto()`.
+
+6. **Prop `deshabilitarArtefacto`:** `CodigoConResaltado` (usado dentro del panel) pasa `deshabilitarArtefacto={true}` implicito (no usa deteccion). Esto evita recursion infinita: el panel no intenta convertir su propio codigo en artefacto.
+
+7. **Vista previa sandboxed:** El iframe usa `sandbox="allow-scripts"` sin `allow-same-origin`, previniendo que el HTML del usuario acceda al DOM de la aplicacion o a cookies/localStorage. SVGs se envuelven en HTML minimo con fondo claro (`#f9f9f9`) para consistencia con el tema light del panel.
+
+8. **Layout responsive:** En desktop (≥1024px, breakpoint `lg` de Tailwind), el chat y el panel coexisten (55%/45%). En mobile, el panel ocupa 100% y el chat se oculta completamente (`hidden lg:flex`). El max-width de 700px en el panel previene que ocupe demasiado espacio en pantallas ultrawide.
 
 ---
 

@@ -14,6 +14,7 @@ import { TarjetasCitacion } from "@/components/chat/tarjetas-citacion"
 import { BotonPensamiento, ContenidoPensamiento } from "@/components/chat/indicador-pensamiento"
 import { TarjetaArchivoConMiniatura } from "@/components/chat/tarjeta-archivo"
 import { obtenerNombreModelo } from "@/lib/modelos"
+import { ProveedorMensaje } from "@/lib/contexto-mensaje"
 
 interface PropiedadesBurbuja {
   mensaje: Mensaje
@@ -179,6 +180,19 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
   const estaSoloEsperando = !esUsuario && estaEscribiendoEste && !mensaje.contenido
   // Estado del pensamiento expandido (levantado desde IndicadorPensamiento)
   const [pensamientoExpandido, establecerPensamientoExpandido] = useState(false)
+  // Patron React: ajustar estado cuando props cambian (sin useEffect)
+  // Auto-expande cuando transiciona "pensando" → "completado" durante streaming (no para mensajes historicos)
+  const [prevEstadoPensamiento, establecerPrevEstadoPensamiento] = useState<string | undefined>(undefined)
+  if (prevEstadoPensamiento !== mensaje.pensamiento?.estado) {
+    establecerPrevEstadoPensamiento(mensaje.pensamiento?.estado)
+    if (
+      prevEstadoPensamiento === "pensando" &&
+      mensaje.pensamiento?.estado === "completado" &&
+      mensaje.pensamiento.resumen.length > 0
+    ) {
+      establecerPensamientoExpandido(true)
+    }
+  }
   // El avatar va en flex row si es el asistente
   const tieneIndicadorInline = !esUsuario
 
@@ -309,7 +323,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
               {mensaje.contenido}
             </div>
           ) : (
-            <>
+            <ProveedorMensaje estaGenerandose={estaEscribiendoEste && estaGenerando}>
               {/* Contenido de texto */}
               {(mensaje.contenido || !estaSoloEsperando) && (
                 <div className="prosa-markdown break-words">
@@ -321,7 +335,7 @@ export const BurbujaMensaje = memo(function BurbujaMensaje({
               {mensaje.citaciones && mensaje.citaciones.length > 0 && (
                 <TarjetasCitacion citaciones={mensaje.citaciones} />
               )}
-            </>
+            </ProveedorMensaje>
           )}
         </div>
 

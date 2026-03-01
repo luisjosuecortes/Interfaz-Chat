@@ -149,7 +149,7 @@ export async function POST(solicitud: Request) {
       instructions: INSTRUCCIONES_SISTEMA,
       input: entradaMensajes,
       stream: true,
-      max_output_tokens: 4096,
+      max_output_tokens: 16384,
       tools: [{
         type: "web_search" as const,
         search_context_size: "medium" as const,

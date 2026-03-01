@@ -112,8 +112,14 @@
 }
 
 /* Scrollbar personalizado estilo Claude */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d1d5db transparent;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -538,4 +544,22 @@ textarea:focus::placeholder {
 
 .scrollbar-oculto::-webkit-scrollbar {
   display: none;
+}
+
+/* ===== Panel de artefactos ===== */
+
+@keyframes entrada-panel {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-entrada-panel {
+  animation: entrada-panel 200ms ease-out;
 }

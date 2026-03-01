@@ -29,6 +29,8 @@ interface PropiedadesAreaChat {
   alProcesarAdjuntoRAG?: (adjunto: Adjunto) => void
   estaIndexandoRAG?: boolean
   alEliminarDocumentoRAG?: (adjuntoId: string) => void
+  archivosExternos?: File[] | null
+  alLimpiarArchivosExternos?: () => void
 }
 
 export function AreaChat({
@@ -50,6 +52,8 @@ export function AreaChat({
   alProcesarAdjuntoRAG,
   estaIndexandoRAG,
   alEliminarDocumentoRAG,
+  archivosExternos,
+  alLimpiarArchivosExternos,
 }: PropiedadesAreaChat) {
   const { contenedorRef, irAlFondo } = useScrollAlFondo()
   const referenciaInputTitulo = useRef<HTMLInputElement>(null)
@@ -202,6 +206,8 @@ export function AreaChat({
           alProcesarAdjuntoRAG={alProcesarAdjuntoRAG}
           estaIndexandoRAG={estaIndexandoRAG}
           alEliminarDocumentoRAG={alEliminarDocumentoRAG}
+          archivosExternos={archivosExternos}
+          alLimpiarArchivosExternos={alLimpiarArchivosExternos}
         />
       </div>
     </div>

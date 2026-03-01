@@ -1,9 +1,13 @@
 "use client"
 
-import { Copy, Check } from "lucide-react"
+import { Copy, Check, FileCode2, FileText, Globe, Image, ChevronRight, Sigma } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
 import { useCopiarAlPortapapeles } from "@/lib/hooks"
+import { useArtefacto } from "@/lib/contexto-artefacto"
+import type { TipoArtefacto } from "@/lib/tipos"
 import { PrismLight as ResaltadorSintaxis } from "react-syntax-highlighter"
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism"
+import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism"
+import { useMensaje } from "@/lib/contexto-mensaje"
 
 // Importar lenguajes necesarios
 import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript"
@@ -129,8 +133,11 @@ ResaltadorSintaxis.registerLanguage("regex", regex)
 ResaltadorSintaxis.registerLanguage("solidity", solidity)
 ResaltadorSintaxis.registerLanguage("zig", zig)
 ResaltadorSintaxis.registerLanguage("nim", nim)
+ResaltadorSintaxis.registerLanguage("markdown", markdown)
+ResaltadorSintaxis.registerLanguage("md", markdown)
+
 // Mapa de nombres bonitos para mostrar en la etiqueta
-const NOMBRES_LENGUAJE: Record<string, string> = {
+export const NOMBRES_LENGUAJE: Record<string, string> = {
   javascript: "JavaScript",
   js: "JavaScript",
   typescript: "TypeScript",
@@ -200,34 +207,237 @@ const NOMBRES_LENGUAJE: Record<string, string> = {
   regex: "RegEx",
   solidity: "Solidity",
   zig: "Zig",
-  nim: "Nim"
+  nim: "Nim",
+  svg: "SVG",
 }
+
+// === Artefactos: detección y configuración ===
+
+/** Número mínimo de líneas para considerar un bloque de código como artefacto */
+const UMBRAL_LINEAS_ARTEFACTO = 25
+
+/** Extensiones de archivo para descarga según lenguaje */
+export const EXTENSIONES_DESCARGA: Record<string, string> = {
+  javascript: "js", js: "js",
+  typescript: "ts", ts: "ts",
+  jsx: "jsx", tsx: "tsx",
+  python: "py", py: "py",
+  c: "c", cpp: "cpp", "c++": "cpp",
+  csharp: "cs", cs: "cs",
+  java: "java", go: "go",
+  rust: "rs", rs: "rs",
+  php: "php", ruby: "rb", rb: "rb",
+  swift: "swift", kotlin: "kt", kt: "kt",
+  dart: "dart", scala: "scala",
+  bash: "sh", sh: "sh", shell: "sh",
+  sql: "sql", lua: "lua",
+  html: "html", markup: "html", xml: "xml",
+  css: "css", scss: "scss", less: "less",
+  json: "json", yaml: "yaml", yml: "yaml", toml: "toml",
+  markdown: "md", md: "md",
+  dockerfile: "Dockerfile", docker: "Dockerfile",
+  svg: "svg", graphql: "graphql",
+  latex: "tex", tex: "tex",
+  r: "r", matlab: "m",
+  haskell: "hs", elixir: "ex", erlang: "erl",
+  clojure: "clj", fsharp: "fs",
+  julia: "jl", ocaml: "ml",
+  solidity: "sol", zig: "zig", nim: "nim",
+}
+
+/** Genera un ID determinista y estable durante streaming.
+ *  Usa solo los primeros 100 chars para que el ID no cambie mientras se appendea codigo. */
+function generarIdArtefacto(contenido: string): string {
+  let hash = 0
+  const muestra = contenido.slice(0, 100)
+  for (let i = 0; i < muestra.length; i++) {
+    hash = ((hash << 5) - hash + muestra.charCodeAt(i)) | 0
+  }
+  return `art-${Math.abs(hash).toString(36)}`
+}
+
+/** Determina si un bloque de código debe mostrarse como artefacto en panel lateral */
+function debeSerArtefacto(codigo: string, lenguaje: string, totalLineas: number): boolean {
+  // LaTeX: siempre artefacto (se puede previsualizar con KaTeX)
+  if (lenguaje === "latex" || lenguaje === "tex") return true
+  // SVG: siempre artefacto (se puede previsualizar)
+  if (lenguaje === "svg" || codigo.trimStart().startsWith("<svg")) return true
+  // HTML completo: artefacto con vista previa
+  if (
+    (lenguaje === "html" || lenguaje === "markup") &&
+    (codigo.includes("<!DOCTYPE") || codigo.includes("<html"))
+  ) return true
+  // Código largo (>= umbral de líneas)
+  return totalLineas >= UMBRAL_LINEAS_ARTEFACTO
+}
+
+/** Determina el tipo de artefacto según lenguaje y contenido */
+function determinarTipo(lenguaje: string, codigo: string): TipoArtefacto {
+  if (lenguaje === "latex" || lenguaje === "tex") return "latex"
+  if (lenguaje === "svg" || codigo.trimStart().startsWith("<svg")) return "svg"
+  if (
+    (lenguaje === "html" || lenguaje === "markup") &&
+    (codigo.includes("<!DOCTYPE") || codigo.includes("<html"))
+  ) return "html"
+  if (lenguaje === "markdown" || lenguaje === "md") return "markdown"
+  return "codigo"
+}
+
+/** Intenta inferir un título del código (busca nombre de archivo en la primera línea) */
+function inferirTitulo(codigo: string, lenguaje: string): string {
+  const primeraLinea = codigo.split("\n")[0].trim()
+  // Buscar patrones de nombre de archivo en comentarios: // app.tsx, # main.py, <!-- index.html -->
+  const patronArchivo = /^(?:\/\/|#|<!--)\s*(\S+\.\w+)/
+  const coincidencia = patronArchivo.exec(primeraLinea)
+  if (coincidencia) return coincidencia[1]
+  // Fallback: nombre del lenguaje o genérico
+  if (!lenguaje || lenguaje === "text") return "Código"
+  return NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+}
+
+// === Tarjeta de artefacto (sustituye al bloque en el chat) ===
+
+/** Mapa de iconos por tipo de artefacto */
+const ICONOS_ARTEFACTO: Record<TipoArtefacto, typeof FileCode2> = {
+  codigo: FileCode2,
+  html: Globe,
+  svg: Image,
+  markdown: FileText,
+  latex: Sigma,
+}
+
+interface PropiedadesTarjeta {
+  tipo: TipoArtefacto
+  lenguaje: string
+  totalLineas: number
+  titulo: string
+  alAbrir: () => void
+}
+
+function TarjetaArtefacto({ tipo, lenguaje, totalLineas, titulo, alAbrir }: PropiedadesTarjeta) {
+  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+  const Icono = ICONOS_ARTEFACTO[tipo]
+
+  return (
+    <button
+      onClick={alAbrir}
+      className="my-3 flex items-center gap-3 w-full max-w-md rounded-xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-sidebar)] hover:bg-[var(--color-claude-sidebar-hover)] px-4 py-3 transition-colors cursor-pointer text-left group"
+    >
+      <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-[#1e1e1e] text-gray-300 shrink-0">
+        <Icono className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-[var(--color-claude-texto)] truncate">
+          {titulo}
+        </div>
+        <div className="text-xs text-[var(--color-claude-texto-secundario)]">
+          {nombreLenguaje} · {totalLineas} líneas
+        </div>
+      </div>
+      <ChevronRight className="h-4 w-4 text-[var(--color-claude-texto-secundario)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+    </button>
+  )
+}
+
+// === Props y estilos ===
 
 interface PropiedadesBloqueCodigo {
   codigo: string
   lenguaje: string
+  /** Deshabilita la detección de artefactos (usado dentro del panel lateral) */
+  deshabilitarArtefacto?: boolean
 }
 
-const estiloCodigo = {
+/** Estilo para el panel de artefactos (fondo delegado al contenedor, overflow delegado) */
+const estiloCodigoPanel = {
   margin: 0,
   padding: "1rem",
   fontSize: "0.85rem",
-  background: "#1e1e1e",
+  background: "transparent",
+  borderRadius: 0,
+  overflow: "visible",
+}
+
+/** Estilo para bloques inline en el chat (fondo del tema oneLight) */
+const estiloCodigoInline = {
+  margin: 0,
+  padding: "1rem",
+  fontSize: "0.85rem",
   borderRadius: 0,
 }
 
-export function BloqueCodigoConResaltado({ codigo, lenguaje }: PropiedadesBloqueCodigo) {
-  const { haCopiado, copiar } = useCopiarAlPortapapeles()
-  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+// === Componente principal: bloque de código con resaltado ===
 
+export function BloqueCodigoConResaltado({ codigo, lenguaje, deshabilitarArtefacto }: PropiedadesBloqueCodigo) {
+  const { haCopiado, copiar } = useCopiarAlPortapapeles()
+  const { estaDisponible, abrirArtefacto, artefactoActivo, actualizarContenidoArtefacto } = useArtefacto()
+  const contextoMensaje = useMensaje()
+  const estaGenerandose = contextoMensaje?.estaGenerandose ?? false
+  const nombreLenguaje = NOMBRES_LENGUAJE[lenguaje] ?? lenguaje
+  const totalLineas = codigo.split("\n").length
+
+  // Generar ID solo una vez al montar el código. Si el código está incompleto (streaming < 100 chars),
+  // el hash temprano servirá inmutablemente como ID único de este bloque durante todo su ciclo de vida.
+  const [idArtefacto] = useState(() => generarIdArtefacto(codigo))
+
+  const esArtefactoValido = !deshabilitarArtefacto && estaDisponible && debeSerArtefacto(codigo, lenguaje, totalLineas)
+  const seHaAutoAbierto = useRef(false)
+
+  // Auto-Apertura Inteligente: abrir el panel solo si este mensaje SE ESTÁ generando ahora mismo
+  useEffect(() => {
+    if (estaGenerandose && esArtefactoValido && !seHaAutoAbierto.current) {
+      seHaAutoAbierto.current = true;
+      const titulo = inferirTitulo(codigo, lenguaje)
+      const tipo = determinarTipo(lenguaje, codigo)
+      abrirArtefacto({
+        id: idArtefacto,
+        tipo,
+        titulo,
+        contenido: codigo,
+        lenguaje,
+        totalLineas,
+      })
+    }
+  }, [estaGenerandose, esArtefactoValido, codigo, lenguaje, totalLineas, idArtefacto, abrirArtefacto])
+
+  // Sync en tiempo real: si el panel muestra este artefacto y el código cambió (streaming), actualizar
+  useEffect(() => {
+    if (artefactoActivo?.id === idArtefacto && artefactoActivo.contenido !== codigo) {
+      actualizarContenidoArtefacto(codigo, totalLineas)
+    }
+  }, [codigo, totalLineas, artefactoActivo?.id, artefactoActivo?.contenido, idArtefacto, actualizarContenidoArtefacto])
+
+  // Si califica como artefacto y el sistema está habilitado, mostrar tarjeta
+  if (esArtefactoValido) {
+    const titulo = inferirTitulo(codigo, lenguaje)
+    const tipo = determinarTipo(lenguaje, codigo)
+    return (
+      <TarjetaArtefacto
+        tipo={tipo}
+        lenguaje={lenguaje}
+        totalLineas={totalLineas}
+        titulo={titulo}
+        alAbrir={() => abrirArtefacto({
+          id: idArtefacto,
+          tipo,
+          titulo,
+          contenido: codigo,
+          lenguaje,
+          totalLineas,
+        })}
+      />
+    )
+  }
+
+  // Bloque de código normal (inline, con cabecera y botón copiar)
   return (
-    <div className="my-3 rounded-lg overflow-hidden border border-[#2e2e2e] [&_code]:!bg-transparent">
+    <div className="my-3 rounded-lg overflow-hidden border border-[var(--color-claude-input-border)] [&_code]:!bg-transparent">
       {/* Barra superior */}
-      <div className="flex items-center justify-between px-4 py-2 bg-[#171717]">
-        <span className="text-xs text-gray-400 font-mono">{nombreLenguaje}</span>
+      <div className="flex items-center justify-between px-4 py-2 bg-[var(--color-claude-sidebar)]">
+        <span className="text-xs text-[var(--color-claude-texto-secundario)] font-mono">{nombreLenguaje}</span>
         <button
           onClick={() => copiar(codigo)}
-          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+          className="flex items-center gap-1.5 text-xs text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] transition-colors"
         >
           {haCopiado ? (
             <>
@@ -246,8 +456,25 @@ export function BloqueCodigoConResaltado({ codigo, lenguaje }: PropiedadesBloque
       {/* Bloque de codigo con resaltado */}
       <ResaltadorSintaxis
         language={lenguaje}
-        style={oneDark}
-        customStyle={estiloCodigo}
+        style={oneLight}
+        customStyle={estiloCodigoInline}
+        PreTag="div"
+      >
+        {codigo}
+      </ResaltadorSintaxis>
+    </div>
+  )
+}
+
+// === Componente de código para el panel de artefactos (sin cabecera, sin detección) ===
+
+export function CodigoConResaltado({ codigo, lenguaje }: { codigo: string; lenguaje: string }) {
+  return (
+    <div className="[&_code]:!bg-transparent">
+      <ResaltadorSintaxis
+        language={lenguaje}
+        style={oneLight}
+        customStyle={estiloCodigoPanel}
         PreTag="div"
       >
         {codigo}

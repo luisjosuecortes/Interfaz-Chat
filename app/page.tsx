@@ -1,5 +1,10 @@
-import { ContenedorChat } from "@/components/chat/contenedor-chat";
+import { ContenedorChat } from "@/components/chat/contenedor-chat"
+import { ProveedorArtefacto } from "@/lib/contexto-artefacto"
 
 export default function Home() {
-  return <ContenedorChat />;
+  return (
+    <ProveedorArtefacto>
+      <ContenedorChat />
+    </ProveedorArtefacto>
+  )
 }

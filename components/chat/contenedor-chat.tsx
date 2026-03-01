@@ -1,13 +1,15 @@
 "use client"
 
 import { useState, useRef, useCallback } from "react"
-import { useAlmacenChat } from "@/lib/almacen-chat"
+import { useAlmacenChat, obtenerModeloSeleccionado } from "@/lib/almacen-chat"
 import { BarraLateral } from "@/components/chat/barra-lateral"
 import { AreaChat } from "@/components/chat/area-chat"
 import { PantallaInicio } from "@/components/chat/pantalla-inicio"
+import { PanelArtefacto } from "@/components/chat/panel-artefacto"
+import { useArtefacto } from "@/lib/contexto-artefacto"
 import { enviarMensajeConStreaming } from "@/lib/cliente-chat"
 import type { Adjunto, DocumentoRAGUI } from "@/lib/tipos"
-import { generarId } from "@/lib/utils"
+import { generarId, cn } from "@/lib/utils"
 import {
   debeUsarRAG,
   procesarDocumentoParaRAG,
@@ -58,6 +60,7 @@ export function ContenedorChat() {
 
   const [mensajeError, establecerMensajeError] = useState<string | null>(null)
   const referenciaControlador = useRef<AbortController | null>(null)
+  const { artefactoActivo, cerrarArtefacto } = useArtefacto()
 
   // Estado RAG: documentos procesados/en proceso
   const [documentosRAG, establecerDocumentosRAG] = useState<DocumentoRAGUI[]>([])
@@ -227,7 +230,7 @@ export function ContenedorChat() {
 
     await enviarMensajeConStreaming({
       mensajes: historialFinal,
-      modelo: modeloSeleccionado,
+      modelo: obtenerModeloSeleccionado(),
       adjuntos,
       senalAborto: controlador.signal,
       alActualizar: (textoActual) => {
@@ -343,7 +346,7 @@ export function ContenedorChat() {
     // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
     // El usuario ve ambas burbujas al instante, sin ventana de "nada pasa"
     establecerEscribiendo(true)
-    agregarMensaje(idConversacion, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+    agregarMensaje(idConversacion, { rol: "asistente", contenido: "", modelo: obtenerModeloSeleccionado() })
 
     // Obtener contenido aumentado con contexto RAG si hay documentos indexados
     const contenidoConContexto = await obtenerContenidoConContextoRAG(idConversacion, contenido, idsDocumentosRecientes)
@@ -386,7 +389,7 @@ export function ContenedorChat() {
 
     // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
     establecerEscribiendo(true)
-    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: obtenerModeloSeleccionado() })
 
     // Obtener contenido aumentado con contexto RAG (ahora con el indicador ya visible)
     const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, nuevoContenido)
@@ -426,7 +429,7 @@ export function ContenedorChat() {
 
     // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
     establecerEscribiendo(true)
-    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: obtenerModeloSeleccionado() })
 
     // Obtener contenido aumentado con contexto RAG (con indicador ya visible)
     const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensaje.contenido)
@@ -471,7 +474,7 @@ export function ContenedorChat() {
 
     // Patron ChatGPT/Claude: reservar espacio del asistente ANTES del await RAG
     establecerEscribiendo(true)
-    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: modeloSeleccionado })
+    agregarMensaje(conversacionActiva, { rol: "asistente", contenido: "", modelo: obtenerModeloSeleccionado() })
 
     // Obtener contenido aumentado con contexto RAG (con indicador ya visible)
     const contenidoConContexto = await obtenerContenidoConContextoRAG(conversacionActiva, mensajeUsuario.contenido)
@@ -493,6 +496,7 @@ export function ContenedorChat() {
     seleccionarConversacion(id)
     actualizarDocumentosRAGUI(id)
     idRAGTemporal.current = null
+    cerrarArtefacto()
   }
 
   // Nueva conversacion y limpiar estado RAG
@@ -500,10 +504,53 @@ export function ContenedorChat() {
     iniciarNuevaConversacion()
     establecerDocumentosRAG([])
     idRAGTemporal.current = null
+    cerrarArtefacto()
   }
 
+  // === Drag-and-drop global (desde carpetas externas a cualquier parte de la pagina) ===
+  const [estaArrastrandoGlobal, establecerEstaArrastrandoGlobal] = useState(false)
+  const [archivosDropeados, establecerArchivosDropeados] = useState<File[] | null>(null)
+
+  function manejarDragOverGlobal(evento: React.DragEvent) {
+    evento.preventDefault()
+    // Solo activar si hay archivos (no texto u otros tipos de drag)
+    if (evento.dataTransfer?.types.includes("Files")) {
+      establecerEstaArrastrandoGlobal(true)
+    }
+  }
+
+  function manejarDragLeaveGlobal(evento: React.DragEvent) {
+    // Solo desactivar si se salio del contenedor raiz (no de un hijo)
+    if (!evento.currentTarget.contains(evento.relatedTarget as Node)) {
+      establecerEstaArrastrandoGlobal(false)
+    }
+  }
+
+  function manejarDropGlobal(evento: React.DragEvent) {
+    evento.preventDefault()
+    establecerEstaArrastrandoGlobal(false)
+    const archivos = evento.dataTransfer?.files
+    if (archivos && archivos.length > 0) {
+      establecerArchivosDropeados(Array.from(archivos))
+    }
+  }
+
+  const limpiarArchivosDropeados = useCallback(() => {
+    establecerArchivosDropeados(null)
+  }, [])
+
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-[var(--color-claude-bg)]">
+    <div
+      className="flex h-screen w-full overflow-hidden bg-[var(--color-claude-bg)]"
+      onDragOver={manejarDragOverGlobal}
+      onDragLeave={manejarDragLeaveGlobal}
+      onDrop={manejarDropGlobal}
+    >
+      {/* Overlay visual de drag-and-drop global */}
+      {estaArrastrandoGlobal && (
+        <div className="fixed inset-0 z-50 border-2 border-dashed border-[var(--color-claude-acento)] bg-[var(--color-claude-acento)]/5 pointer-events-none rounded-lg m-2" />
+      )}
+
       {/* Barra lateral */}
       <BarraLateral
         estaAbierta={estaBarraLateralAbierta}
@@ -516,42 +563,59 @@ export function ContenedorChat() {
         alRenombrarConversacion={renombrarConversacion}
       />
 
-      {/* Area principal */}
-      <main className="flex flex-1 flex-col min-w-0">
-        {conversacionActual && conversacionActual.mensajes.length > 0 ? (
-          <AreaChat
-            conversacion={conversacionActual}
-            estaEscribiendo={estaEscribiendo}
-            estaBarraLateralAbierta={estaBarraLateralAbierta}
-            modeloSeleccionado={modeloSeleccionado}
-            mensajeError={mensajeError}
-            alEnviar={manejarEnvio}
-            alAlternarBarraLateral={alternarBarraLateral}
-            alSeleccionarModelo={seleccionarModelo}
-            alDetener={detenerGeneracion}
-            alEditarMensaje={manejarEdicionMensaje}
-            alReenviarMensaje={manejarReenvioMensaje}
-            alRegenerarRespuesta={manejarRegenerarRespuesta}
-            alRenombrarConversacion={renombrarConversacion}
-            documentosRAG={documentosRAG}
-            totalFragmentosRAG={estadisticasRAG.totalFragmentos}
-            alProcesarAdjuntoRAG={manejarAdjuntoRAG}
-            estaIndexandoRAG={estaIndexandoRAG}
-            alEliminarDocumentoRAG={manejarEliminarDocumentoRAG}
-          />
-        ) : (
-          <PantallaInicio
-            estaBarraLateralAbierta={estaBarraLateralAbierta}
-            modeloSeleccionado={modeloSeleccionado}
-            alAlternarBarraLateral={alternarBarraLateral}
-            alEnviar={manejarEnvio}
-            alSeleccionarModelo={seleccionarModelo}
-            documentosRAG={documentosRAG}
-            totalFragmentosRAG={estadisticasRAG.totalFragmentos}
-            alProcesarAdjuntoRAG={manejarAdjuntoRAG}
-            estaIndexandoRAG={estaIndexandoRAG}
-            alEliminarDocumentoRAG={manejarEliminarDocumentoRAG}
-          />
+      {/* Area principal: chat + panel artefacto */}
+      <main className="flex flex-1 min-w-0">
+        {/* Chat: se oculta en mobile cuando hay artefacto abierto */}
+        <div className={cn(
+          "flex flex-col min-w-0 transition-all duration-300",
+          artefactoActivo ? "hidden lg:flex lg:flex-1" : "flex-1"
+        )}>
+          {conversacionActual && conversacionActual.mensajes.length > 0 ? (
+            <AreaChat
+              conversacion={conversacionActual}
+              estaEscribiendo={estaEscribiendo}
+              estaBarraLateralAbierta={estaBarraLateralAbierta}
+              modeloSeleccionado={modeloSeleccionado}
+              mensajeError={mensajeError}
+              alEnviar={manejarEnvio}
+              alAlternarBarraLateral={alternarBarraLateral}
+              alSeleccionarModelo={seleccionarModelo}
+              alDetener={detenerGeneracion}
+              alEditarMensaje={manejarEdicionMensaje}
+              alReenviarMensaje={manejarReenvioMensaje}
+              alRegenerarRespuesta={manejarRegenerarRespuesta}
+              alRenombrarConversacion={renombrarConversacion}
+              documentosRAG={documentosRAG}
+              totalFragmentosRAG={estadisticasRAG.totalFragmentos}
+              alProcesarAdjuntoRAG={manejarAdjuntoRAG}
+              estaIndexandoRAG={estaIndexandoRAG}
+              alEliminarDocumentoRAG={manejarEliminarDocumentoRAG}
+              archivosExternos={archivosDropeados}
+              alLimpiarArchivosExternos={limpiarArchivosDropeados}
+            />
+          ) : (
+            <PantallaInicio
+              estaBarraLateralAbierta={estaBarraLateralAbierta}
+              modeloSeleccionado={modeloSeleccionado}
+              alAlternarBarraLateral={alternarBarraLateral}
+              alEnviar={manejarEnvio}
+              alSeleccionarModelo={seleccionarModelo}
+              documentosRAG={documentosRAG}
+              totalFragmentosRAG={estadisticasRAG.totalFragmentos}
+              alProcesarAdjuntoRAG={manejarAdjuntoRAG}
+              estaIndexandoRAG={estaIndexandoRAG}
+              alEliminarDocumentoRAG={manejarEliminarDocumentoRAG}
+              archivosExternos={archivosDropeados}
+              alLimpiarArchivosExternos={limpiarArchivosDropeados}
+            />
+          )}
+        </div>
+
+        {/* Panel artefacto: 45% en desktop, 100% en mobile */}
+        {artefactoActivo && (
+          <div className="w-full lg:w-[45%] lg:max-w-[700px] shrink-0 h-full">
+            <PanelArtefacto />
+          </div>
         )}
       </main>
     </div>

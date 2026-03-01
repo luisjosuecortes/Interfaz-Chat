@@ -122,6 +122,23 @@ export interface ModeloDisponible {
   tieneReasoning?: boolean
 }
 
+// === TIPOS ARTEFACTOS ===
+
+/** Tipo de artefacto detectado en la respuesta del modelo */
+export type TipoArtefacto = "codigo" | "html" | "svg" | "markdown" | "latex"
+
+/** Artefacto: contenido grande extraído del chat para visualizar en panel lateral */
+export interface Artefacto {
+  id: string
+  tipo: TipoArtefacto
+  titulo: string
+  contenido: string
+  lenguaje?: string
+  totalLineas: number
+}
+
+// === TIPOS ESTADO GLOBAL ===
+
 export interface EstadoChat {
   conversaciones: Conversacion[]
   conversacionActiva: string | null

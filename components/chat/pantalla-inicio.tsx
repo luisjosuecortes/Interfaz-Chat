@@ -18,6 +18,8 @@ interface PropiedadesPantallaInicio {
   alProcesarAdjuntoRAG?: (adjunto: Adjunto) => void
   estaIndexandoRAG?: boolean
   alEliminarDocumentoRAG?: (adjuntoId: string) => void
+  archivosExternos?: File[] | null
+  alLimpiarArchivosExternos?: () => void
 }
 
 export function PantallaInicio({
@@ -31,6 +33,8 @@ export function PantallaInicio({
   alProcesarAdjuntoRAG,
   estaIndexandoRAG,
   alEliminarDocumentoRAG,
+  archivosExternos,
+  alLimpiarArchivosExternos,
 }: PropiedadesPantallaInicio) {
   return (
     <div className="flex flex-1 flex-col h-full overflow-hidden w-full relative">
@@ -78,6 +82,8 @@ export function PantallaInicio({
               alProcesarAdjuntoRAG={alProcesarAdjuntoRAG}
               estaIndexandoRAG={estaIndexandoRAG}
               alEliminarDocumentoRAG={alEliminarDocumentoRAG}
+              archivosExternos={archivosExternos}
+              alLimpiarArchivosExternos={alLimpiarArchivosExternos}
             />
           </div>
         </div>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useCallback, useMemo } from "react"
+import { useState, useRef, useCallback, useMemo, useEffect } from "react"
 import { ArrowUp, Paperclip, ChevronDown, Check, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -11,11 +11,14 @@ import { MODELOS_DISPONIBLES, obtenerNombreModelo, CATEGORIAS_MODELOS, PROVEEDOR
 import { IconoProveedor } from "@/components/ui/iconos-proveedor"
 import { IndicadorRAG } from "@/components/chat/indicador-rag"
 import { TarjetaArchivoConMiniatura } from "@/components/chat/tarjeta-archivo"
-import { generarAceptarExtensiones } from "@/lib/rag/separadores-codigo"
+import { generarAceptarExtensiones, esArchivoSoportado } from "@/lib/rag/separadores-codigo"
 
 // Tipos de archivos aceptados
 const TIPOS_IMAGEN = "image/png,image/jpeg,image/gif,image/webp"
 const TIPOS_ARCHIVO = generarAceptarExtensiones()
+
+/** Limite maximo de adjuntos por mensaje */
+const MAXIMO_ADJUNTOS = 10
 
 interface PropiedadesEntrada {
   alEnviar: (contenido: string, adjuntos?: Adjunto[]) => void
@@ -29,6 +32,8 @@ interface PropiedadesEntrada {
   alProcesarAdjuntoRAG?: (adjunto: Adjunto) => void
   estaIndexandoRAG?: boolean
   alEliminarDocumentoRAG?: (adjuntoId: string) => void
+  archivosExternos?: File[] | null
+  alLimpiarArchivosExternos?: () => void
 }
 
 export function EntradaMensaje({
@@ -43,13 +48,20 @@ export function EntradaMensaje({
   alProcesarAdjuntoRAG,
   estaIndexandoRAG,
   alEliminarDocumentoRAG,
+  archivosExternos,
+  alLimpiarArchivosExternos,
 }: PropiedadesEntrada) {
   const [texto, establecerTexto] = useState("")
   const [adjuntos, establecerAdjuntos] = useState<Adjunto[]>([])
   const [selectorAbierto, establecerSelectorAbierto] = useState(false)
   const [proveedorActivo, establecerProveedorActivo] = useState(PROVEEDORES[0].id)
+  const [estaArrastrando, establecerEstaArrastrando] = useState(false)
+  const [estaMontado, establecerEstaMontado] = useState(false)
   const referenciaTextarea = useRef<HTMLTextAreaElement>(null)
   const referenciaInputArchivo = useRef<HTMLInputElement>(null)
+
+  // Deferred mounting: evita hydration mismatch de Radix UI Popover (aria-controls IDs)
+  useEffect(() => { establecerEstaMontado(true) }, []) // eslint-disable-line react-hooks/set-state-in-effect
 
   const tieneContenido = texto.trim().length > 0 || adjuntos.length > 0
 
@@ -86,17 +98,24 @@ export function EntradaMensaje({
   }
 
   function abrirSelectorArchivos() {
+    if (adjuntos.length >= MAXIMO_ADJUNTOS) return
     referenciaInputArchivo.current?.click()
   }
 
-  function manejarSeleccionArchivos(evento: React.ChangeEvent<HTMLInputElement>) {
-    const archivos = evento.target.files
-    if (!archivos) return
+  /** Procesa archivos desde file input, paste o drag-and-drop */
+  function procesarArchivos(archivos: FileList | File[]) {
+    const espacioDisponible = MAXIMO_ADJUNTOS - adjuntos.length
+    if (espacioDisponible <= 0) return
 
-    Array.from(archivos).forEach((archivo) => {
+    const archivosArray = Array.from(archivos).slice(0, espacioDisponible)
+
+    archivosArray.forEach((archivo) => {
+      // Validar tipo (imagenes siempre aceptadas, archivos segun extension)
+      const esImagen = archivo.type.startsWith("image/")
+      if (!esImagen && !esArchivoSoportado(archivo.name)) return
+
       const lector = new FileReader()
       lector.onload = () => {
-        const esImagen = archivo.type.startsWith("image/")
         const nuevoAdjunto: Adjunto = {
           id: generarId(),
           tipo: esImagen ? "imagen" : "archivo",
@@ -104,18 +123,72 @@ export function EntradaMensaje({
           contenido: lector.result as string,
           tipoMime: archivo.type,
         }
-        establecerAdjuntos((previo) => [...previo, nuevoAdjunto])
-
-        // Iniciar indexacion RAG inmediatamente para archivos de documento
-        if (alProcesarAdjuntoRAG) {
-          alProcesarAdjuntoRAG(nuevoAdjunto)
-        }
+        establecerAdjuntos((previo) => {
+          if (previo.length >= MAXIMO_ADJUNTOS) return previo
+          return [...previo, nuevoAdjunto]
+        })
+        if (alProcesarAdjuntoRAG) alProcesarAdjuntoRAG(nuevoAdjunto)
       }
       lector.readAsDataURL(archivo)
     })
+  }
 
+  // Procesar archivos dropeados desde fuera del input (drag-and-drop global)
+  useEffect(() => {
+    if (archivosExternos && archivosExternos.length > 0) {
+      procesarArchivos(archivosExternos)
+      alLimpiarArchivosExternos?.()
+    }
+  }, [archivosExternos, alLimpiarArchivosExternos]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function manejarSeleccionArchivos(evento: React.ChangeEvent<HTMLInputElement>) {
+    const archivos = evento.target.files
+    if (archivos) procesarArchivos(archivos)
     // Resetear input para permitir seleccionar el mismo archivo
     evento.target.value = ""
+  }
+
+  /** Manejar paste de imagenes/archivos desde el portapapeles (Ctrl+V) */
+  function manejarPegar(evento: React.ClipboardEvent) {
+    const items = evento.clipboardData?.items
+    if (!items) return
+
+    const archivos: File[] = []
+    for (const item of items) {
+      if (item.kind === "file") {
+        const archivo = item.getAsFile()
+        if (archivo) archivos.push(archivo)
+      }
+    }
+
+    if (archivos.length > 0) {
+      evento.preventDefault()
+      procesarArchivos(archivos)
+    }
+    // Si no hay archivos, dejar que el paste de texto funcione normal
+  }
+
+  /** Drag-and-drop handlers */
+  function manejarDragOver(evento: React.DragEvent) {
+    evento.preventDefault()
+    if (adjuntos.length < MAXIMO_ADJUNTOS) {
+      establecerEstaArrastrando(true)
+    }
+  }
+
+  function manejarDragLeave(evento: React.DragEvent) {
+    if (!evento.currentTarget.contains(evento.relatedTarget as Node)) {
+      establecerEstaArrastrando(false)
+    }
+  }
+
+  function manejarDrop(evento: React.DragEvent) {
+    evento.preventDefault()
+    establecerEstaArrastrando(false)
+    const archivos = evento.dataTransfer?.files
+    if (archivos && archivos.length > 0) {
+      procesarArchivos(archivos)
+    }
   }
 
   function eliminarAdjunto(id: string) {
@@ -131,7 +204,17 @@ export function EntradaMensaje({
   return (
     <div className="px-4 pb-4">
       <div className="mx-auto max-w-3xl">
-        <div className="overflow-hidden rounded-2xl border border-[var(--color-claude-input-border)] bg-[var(--color-claude-input)] shadow-[var(--sombra-xs)] focus-within:border-[var(--color-claude-texto)] focus-within:shadow-[var(--sombra-input-foco)] transition-all duration-200 ring-1 ring-transparent focus-within:ring-[var(--color-claude-texto)]/10">
+        <div
+          className={cn(
+            "overflow-hidden rounded-2xl border bg-[var(--color-claude-input)] shadow-[var(--sombra-xs)] focus-within:border-[var(--color-claude-texto)] focus-within:shadow-[var(--sombra-input-foco)] transition-all duration-200 ring-1 ring-transparent focus-within:ring-[var(--color-claude-texto)]/10",
+            estaArrastrando
+              ? "border-dashed border-[var(--color-claude-acento)] bg-[var(--color-claude-acento)]/5"
+              : "border-[var(--color-claude-input-border)]"
+          )}
+          onDragOver={manejarDragOver}
+          onDragLeave={manejarDragLeave}
+          onDrop={manejarDrop}
+        >
           {/* Vista previa de adjuntos */}
           {adjuntos.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 py-1.5">
@@ -161,8 +244,8 @@ export function EntradaMensaje({
               value={texto}
               onChange={manejarCambio}
               onKeyDown={manejarTecla}
+              onPaste={manejarPegar}
               placeholder="Escribe tu mensaje..."
-              disabled={estaDeshabilitado}
               rows={1}
               className={cn(
                 "w-full resize-none bg-transparent text-sm text-[var(--color-claude-texto)] placeholder:text-[var(--color-claude-texto-secundario)] focus:outline-none scrollbar-oculto",
@@ -181,7 +264,7 @@ export function EntradaMensaje({
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8 text-[var(--color-claude-texto-secundario)] hover:text-[var(--color-claude-texto)] hover:bg-[var(--color-claude-sidebar-hover)]"
-                    disabled={estaDeshabilitado}
+                    disabled={estaDeshabilitado || adjuntos.length >= MAXIMO_ADJUNTOS}
                     onClick={abrirSelectorArchivos}
                   >
                     <Paperclip className="h-4 w-4" />
@@ -202,7 +285,8 @@ export function EntradaMensaje({
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Selector de modelo con panel de proveedores */}
+              {/* Selector de modelo con panel de proveedores (deferred: evita hydration mismatch de Radix) */}
+              {estaMontado ? (
               <Popover
                 open={selectorAbierto}
                 onOpenChange={(abierto) => {
@@ -297,6 +381,11 @@ export function EntradaMensaje({
                   </div>
                 </PopoverContent>
               </Popover>
+              ) : (
+                <span className="h-8 px-3 text-xs font-medium text-[var(--color-claude-texto-secundario)] inline-flex items-center">
+                  {obtenerNombreModelo(modeloSeleccionado)}
+                </span>
+              )}
 
               {/* Boton enviar / detener */}
               {estaEscribiendo && alDetener ? (

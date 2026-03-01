@@ -1,7 +1,7 @@
-# PenguinChat - Asistente de IA 🐧
+# PenguinLabs - Asistente de IA 🐧
 
 
-PenguinChat es una interfaz de chat avanzada y completa, diseñada para ofrecer una experiencia de usuario premium con capacidades modernas de inteligencia artificial.
+PenguinLabs es una interfaz de chat avanzada y completa, diseñada para ofrecer una experiencia de usuario premium con capacidades modernas de inteligencia artificial.
 
 ## Características Principales 🚀
 

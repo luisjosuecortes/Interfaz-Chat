@@ -137,6 +137,27 @@ export async function enviarMensajeConStreaming({
       }
     }
 
+    // Procesar datos residuales en el buffer (ultimo chunk sin \n final)
+    if (bufferIncompleto.trim()) {
+      const lineaFinal = bufferIncompleto.trim()
+      if (lineaFinal.startsWith("data: ")) {
+        const datos = lineaFinal.slice(6).trim()
+        if (datos === "[FIN]") {
+          alFinalizar()
+          return
+        }
+        try {
+          const parseado = JSON.parse(datos)
+          if (parseado.contenido) {
+            textoAcumulado += parseado.contenido
+            alActualizar(textoAcumulado)
+          }
+        } catch {
+          // Ignorar lineas que no son JSON valido
+        }
+      }
+    }
+
     alFinalizar()
   } catch (error) {
     // Si fue cancelacion intencional, no mostrar error

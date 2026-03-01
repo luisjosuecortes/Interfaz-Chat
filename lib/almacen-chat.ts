@@ -32,6 +32,11 @@ function suscribirse(suscriptor: () => void): () => void {
   return () => suscriptores.delete(suscriptor)
 }
 
+/** Lectura directa del modelo seleccionado (evita closures stale en callbacks memoizados) */
+export function obtenerModeloSeleccionado(): string {
+  return estado.modeloSeleccionado
+}
+
 // Acciones
 const acciones: AccionesChat = {
   crearConversacion: () => {

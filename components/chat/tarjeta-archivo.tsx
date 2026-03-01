@@ -1,11 +1,12 @@
 "use client"
 
-import { memo } from "react"
+import { memo, useState } from "react"
 import { FileText, FileCode, FileSpreadsheet, File, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { Adjunto } from "@/lib/tipos"
 import { useMiniaturaPDF } from "@/lib/use-miniatura-pdf"
+import { LightboxImagen } from "./lightbox-imagen"
 
 // Categorias de archivo por extension
 type CategoriaArchivo = "pdf" | "codigo" | "datos" | "config" | "texto" | "imagen"
@@ -93,27 +94,36 @@ export const TarjetaArchivo = memo(function TarjetaArchivo({
   const extension = obtenerExtension(nombre)
   const esImagen = tipo === "imagen"
   const esCompacta = variante === "compacta"
+  const [lightboxAbierto, establecerLightboxAbierto] = useState(false)
 
-  // Imagenes: miniatura directa
+  // Imagenes: miniatura directa (click para lightbox en variante expandida)
   if (esImagen && contenido) {
     return (
-      <div className={cn(
-        "relative group rounded-lg overflow-hidden border border-[var(--color-claude-input-border)]",
-        esCompacta ? "h-12 w-12" : "h-24 w-24"
-      )}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={contenido} alt={nombre} className="h-full w-full object-cover" />
-        {alEliminar && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="absolute top-0.5 right-0.5 h-5 w-5 bg-black/50 hover:bg-black/70 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={alEliminar}
-          >
-            <X className="h-3 w-3" />
-          </Button>
+      <>
+        <div
+          className={cn(
+            "relative group rounded-lg overflow-hidden border border-[var(--color-claude-input-border)] cursor-pointer",
+            esCompacta ? "h-32 w-32" : "h-24 w-24"
+          )}
+          onClick={() => establecerLightboxAbierto(true)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={contenido} alt={nombre} className="h-full w-full object-cover" />
+          {alEliminar && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-0.5 right-0.5 h-5 w-5 !bg-black/60 hover:!bg-black/80 !text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity ring-1 ring-white/30"
+              onClick={(e) => { e.stopPropagation(); alEliminar() }}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          )}
+        </div>
+        {lightboxAbierto && (
+          <LightboxImagen src={contenido} alt={nombre} alCerrar={() => establecerLightboxAbierto(false)} />
         )}
-      </div>
+      </>
     )
   }
 
@@ -138,7 +148,7 @@ export const TarjetaArchivo = memo(function TarjetaArchivo({
           <Button
             variant="ghost"
             size="icon"
-            className="absolute top-0.5 right-0.5 h-5 w-5 bg-black/50 hover:bg-black/70 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute top-0.5 right-0.5 h-5 w-5 !bg-black/60 hover:!bg-black/80 !text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity ring-1 ring-white/30"
             onClick={alEliminar}
           >
             <X className="h-3 w-3" />
